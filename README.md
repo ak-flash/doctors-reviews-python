@@ -37,24 +37,24 @@ sudo apt-get install xvfb python3 python3-pip python3-venv
 ## Create a virtual environment 
 python -m venv venv
 
-# Activate the virtual environment
+## Activate the virtual environment
 
-#  on Windows
+###  on Windows
 venv\Scripts\activate.bat
 
-# on macOS and Linux
+### on macOS and Linux
 source venv/bin/activate
 
-# Install using requirements
+## Install using requirements
 pip install -r requirements.txt
 
-# Manual install
+## Manual install
 pip install patchright fastapi[standard]
 
 
 
-# Install chrome browser
+## Install chrome browser
 patchright install chrome
 
-# Run script in virtual monitor
+## Run script in virtual monitor
 xvfb-run --server-args="-screen 0 1024x768x24" /home/ubuntu/doctors-reviews/venv/bin/python main.py
