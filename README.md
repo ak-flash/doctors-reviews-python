@@ -18,16 +18,15 @@
     https://docdoc.ru/doctor/ivanov-ivan
     https://prodoctorov.ru/moskva/vrach/ivanov_ivan/
 
+Используемые модули:
+    patchright
+    fastapi
+    
 Настройки анализ сентиментальности отзыва (дополнительно):
 
     AI_API_URL: https://openrouter.ai/api/v1
     AI_MODEL: mistralai/mistral-small-24b-instruct-2501:free
     AI_API_KEY: sk-o...
-
-
-Используемые модули:
-    patchright
-    fastapi
 
 
 # Установка
