@@ -1,0 +1,64 @@
+<html>
+<head>
+    <title>Doctors Reviews API</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 10px 20px; }
+        code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }
+        .block { margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Doctors Reviews API</h1>
+    <div class="block">
+        <b>Описание:</b><br>
+        Сервис для сбора отзывов с медицинских платформ и анализа их тональности с помощью AI.<br>
+        <br>
+        <div class="block">
+            <b>Доступные роуты:</b>
+            <ul>
+                <li><code>GET /api/v1/getReviews?url=...&platform=...&all_reviews=...</code> — получить отзывы</li>
+                <li><code>POST /api/v1/checkSentiment</code> — анализ сентиментальности отзыва (тональности: положительный, отрицательный) (JSON: {'{"review": "текст"}'})</li>
+            </ul>
+        </div>
+        
+        
+        <b>Параметры:</b>
+        <ul>
+            <li>
+                <b><code>platform</code></b> — поддерживаемые платформы:
+                <ul>
+                    <li><code>sberzdorovie</code> — СберЗдоровье (https://sberhealth.ru, https://docdoc.ru)</li>
+                    <li><code>prodoctorov</code> — ПроДокторов (https://prodoctorov.ru)</li>
+                </ul>
+            </li>
+            <li>
+                <b><code>url</code></b> — ссылка на страницу врача на выбранной платформе.<br>
+                <div style="padding: 5px;">
+                    Примеры:
+                </div>
+                <code>https://docdoc.ru/doctor/ivanov-ivan</code><br>
+                <code>https://prodoctorov.ru/moskva/vrach/ivanov_ivan/</code>
+            </li>
+        </ul>
+    </div>
+    <div class="block">
+        <b>Настройки анализ сентиментальности отзыва (дополнительно):</b>
+        <ul>
+            <li><b>AI_API_URL:</b> <code>{{AI_API_URL}}</code></li>
+            <li><b>AI_MODEL:</b> <code>{{AI_MODEL}}</code></li>
+            <li><b>AI_API_KEY:</b> <code>{{AI_API_KEY}}</code></li>
+        </ul>
+    </div>
+    
+    <div class="block">
+        <b>Исходный код:</b> <a href="#">(укажите ссылку на репозиторий, если есть)</a>
+    </div>
+    <div class="block">
+        <b>Используемые модули:</b>
+        <ul>
+            <li><a href="https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python" target="_blank">patchright</a></li>
+            <li><a href="https://fastapi.tiangolo.com" target="_blank">fastapi</a></li>
+        </ul>
+    </div>
+</body>
+</html> 
