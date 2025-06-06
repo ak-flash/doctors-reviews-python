@@ -250,13 +250,7 @@ async def sentiment_route(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index():
     index_path = pathlib.Path("index.html")
-    if not index_path.exists():
-        return HTMLResponse("<b>index.html не найден</b>", status_code=500)
     html = index_path.read_text(encoding="utf-8")
-    api_key_short = AI_API_KEY[:4] + "..." if AI_API_KEY else "не задан"
-    html = html.replace("{{AI_API_URL}}", AI_API_URL or "не задан")
-    html = html.replace("{{AI_MODEL}}", AI_MODEL or "не задан")
-    html = html.replace("{{AI_API_KEY}}", api_key_short)
     return HTMLResponse(content=html)
 
 @app.get('/favicon.ico')
