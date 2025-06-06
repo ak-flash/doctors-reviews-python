@@ -1,18 +1,30 @@
 <html>
 <head>
     <title>Doctors Reviews API</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <style>
         body { font-family: Arial, sans-serif; margin: 10px 20px; }
         code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }
-        .block { margin-bottom: 20px; }
+        .block { margin-bottom: 10px; }
+        .flex { display: flex; gap: 10px; margin: 20px; }
     </style>
 </head>
 <body>
-    <h1>Doctors Reviews API</h1>
+    <h1>Get Doctors Reviews API</h1>
     <div class="block">
-        <b>Описание:</b><br>
-        Сервис для сбора отзывов с медицинских платформ и анализа их тональности с помощью AI.<br>
-        <br>
+        <b>Описание:</b>
+        Сервис для сбора отзывов с медицинских платформ СберЗдоровье (https://docdoc.ru), ПроДокторов (https://prodoctorov.ru) и анализа их тональности (положительная, отрицательная) с помощью ИИ.<br>
+     
+        <div class="flex">
+            <a href="/docs">Документация OpenAPI</a>
+            <a href="https://github.com/ak-flash/doctors-reviews-python">Исходный код</a>
+            <div style="display: flex; gap: 10px; margin-left: 10px;">
+                Используемые модули:
+                <a href="https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python" target="_blank">patchright</a>
+                <a href="https://fastapi.tiangolo.com" target="_blank">fastapi</a>
+            </div>
+        </div>
+        
         <div class="block">
             <b>Доступные роуты:</b>
             <ul>
@@ -20,7 +32,6 @@
                 <li><code>POST /api/v1/checkSentiment</code> — анализ сентиментальности отзыва (тональности: положительный, отрицательный) (JSON: {'{"review": "текст"}'})</li>
             </ul>
         </div>
-        
         
         <b>Параметры:</b>
         <ul>
@@ -50,15 +61,6 @@
         </ul>
     </div>
     
-    <div class="block">
-        <b>Исходный код:</b> <a href="#">(укажите ссылку на репозиторий, если есть)</a>
-    </div>
-    <div class="block">
-        <b>Используемые модули:</b>
-        <ul>
-            <li><a href="https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python" target="_blank">patchright</a></li>
-            <li><a href="https://fastapi.tiangolo.com" target="_blank">fastapi</a></li>
-        </ul>
-    </div>
+    
 </body>
 </html> 

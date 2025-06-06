@@ -211,6 +211,7 @@ async def check_review_sentiment(text: str) -> str:
 
 app = fastapi.FastAPI()
 
+
 @app.get("/api/v1/getReviews")
 async def run_playwright(url: str = None, platform: Platform = None, all_reviews: bool = False):
     if not url:
