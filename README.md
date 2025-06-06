@@ -32,7 +32,7 @@ https://doc-reviews.ak-vps.ru/docs
     AI_API_KEY: sk-o...
 
 
-# Установка
+## Установка
 
     sudo apt-get install xvfb python3 python3-pip python3-venv 
 
@@ -41,19 +41,19 @@ https://doc-reviews.ak-vps.ru/docs
 
 ## Activate the virtual environment
 
-###  on Windows
+#### on Windows
     venv\Scripts\activate.bat
 
-### on macOS and Linux
+#### on macOS and Linux
     source venv/bin/activate
 
-## Install
-### Install using requirements
+## Install packages
+#### Install using requirements
     pip install -r requirements.txt
 
 OR
 
-### Manual install
+#### Manual install
     pip install patchright fastapi[standard]
 
 
