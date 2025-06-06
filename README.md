@@ -34,29 +34,31 @@ https://doc-reviews.ak-vps.ru/docs
 
 # Установка
 
-sudo apt-get install xvfb python3 python3-pip python3-venv 
+    sudo apt-get install xvfb python3 python3-pip python3-venv 
 
 ## Create a virtual environment 
-python -m venv venv
+    python -m venv venv
 
 ## Activate the virtual environment
 
 ###  on Windows
-venv\Scripts\activate.bat
+    venv\Scripts\activate.bat
 
 ### on macOS and Linux
-source venv/bin/activate
+    source venv/bin/activate
 
-## Install using requirements
-pip install -r requirements.txt
+## Install
+### Install using requirements
+    pip install -r requirements.txt
 
-## Manual install
-pip install patchright fastapi[standard]
+OR
 
+### Manual install
+    pip install patchright fastapi[standard]
 
 
 ## Install chrome browser
-patchright install chrome
+    patchright install chrome
 
 ## Run script in virtual monitor
-xvfb-run --server-args="-screen 0 1024x768x24" /home/ubuntu/doctors-reviews/venv/bin/python main.py
+    xvfb-run --server-args="-screen 0 1024x768x24" /home/ubuntu/doctors-reviews/venv/bin/python main.py
