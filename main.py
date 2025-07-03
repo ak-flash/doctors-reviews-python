@@ -1,7 +1,6 @@
-import asyncio
 import fastapi,uvicorn
 import json
-from typing import List, Dict, Optional
+from typing import List
 from pydantic import BaseModel
 from enum import Enum
 # patchright here!
@@ -10,14 +9,18 @@ import os
 import httpx
 from dotenv import load_dotenv
 import logging
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
-import pathlib
+from fastapi import Request
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
+import hashlib
+from datetime import datetime
 
 load_dotenv()
 AI_API_URL = os.getenv("AI_API_URL")
 AI_API_KEY = os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL")  # Например: distilbert-base-uncased-finetuned-sst-2-english
+SAVE_SCREENSHOT = os.getenv("SAVE_SCREENSHOT", "true").lower() == "true"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,41 +58,101 @@ def modify_url_for_platform(url: str, platform: Platform, all_reviews: bool = Fa
     return url
 
 
+# Глобальный браузер через lifespan
+@asynccontextmanager
+async def lifespan(app):
+    app.state.playwright = await async_playwright().start()
+    app.state.browser_context = await app.state.playwright.chromium.launch_persistent_context(
+        user_data_dir="data",
+        channel="chrome",
+        headless=False,
+        no_viewport=True,
+        args=['--no-sandbox', '--disable-setuid-sandbox']
+    )
+    try:
+        yield
+    finally:
+        await app.state.browser_context.close()
+        await app.state.playwright.stop()
+
+
+app = fastapi.FastAPI(lifespan=lifespan)
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    with open("index.html", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+        
+app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+
+@app.get("/api/v1/getReviews")
+async def run_playwright(url: str = None, platform: Platform = None, all_reviews: bool = False):
+    if not url:
+        return {
+            "error": "Не указан параметр url",
+            "details": "Пожалуйста, укажите URL в параметрах запроса, например: /?url=https://docdoc.ru/doctor/SomeDoctor"
+        }
+    if not platform:
+        return {
+            "error": "Не указана платформа",
+            "details": "Пожалуйста, укажите платформу в параметрах запроса: platform=sberzdorovie или platform=prodoctorov"
+        }
+    return await fetch(url, platform, all_reviews)
+
+@app.post("/api/v1/checkSentiment")
+async def sentiment_route(request: Request):
+    """
+    Эндпоинт для проверки тональности одного отзыва.
+    Ожидает JSON: {"review": "..."}
+    """
+    try:
+        data = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Некорректный JSON в теле запроса", "details": str(e)}
+        )
+    review = data.get("review")
+    if not review:
+        return {"error": "Не передан текст отзыва (review)"}
+    if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
+        return {"error": "AI_API_KEY, AI_API_URL, AI_MODEL не установлены в .env файле"}
+    sentiment = await check_review_sentiment(review)
+    return {"sentiment": sentiment}
+
+
+
 async def fetch(url: str, platform: Platform, all_reviews: bool = False):
     # Модифицируем URL в зависимости от платформы
     url = modify_url_for_platform(url, platform, all_reviews)
-    
-    async with async_playwright() as p:
-        browser = await p.chromium.launch_persistent_context(
-            user_data_dir="data",
-            channel="chrome",
-            headless=False,
-            no_viewport=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox']
-        )
-        page = await browser.new_page()
-        try:
-            # Увеличиваем таймаут и добавляем ожидание загрузки сети
-            await page.goto(url, timeout=30000, wait_until='networkidle')
-
-            # Получаем заголовок страницы
-            title = await page.title()
-            
-            # Парсим отзывы
-            reviews = await parse_reviews(platform, page, all_reviews)
-            
-            await browser.close()
-            return {
-                "title": title,
-                "reviews": [review.dict() for review in reviews]
-            }
-        except Exception as e:
-            await browser.close()
-            return {
-                "error": "Ошибка при загрузке страницы",
-                "details": str(e)
-            }
-    
+    browser_context = app.state.browser_context
+    page = await browser_context.new_page()
+    try:
+        await page.goto(url, timeout=30000, wait_until='networkidle')
+        title = await page.title()
+        reviews = await parse_reviews(platform, page, all_reviews)
+        # --- Сохраняем скриншот ---
+        screenshot_path = None
+        if SAVE_SCREENSHOT:
+            os.makedirs("screenshots", exist_ok=True)
+            url_hash = hashlib.md5(url.encode()).hexdigest()
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+            screenshot_path = f"screenshots/{timestamp}_{url_hash}.png"
+            await page.screenshot(path=screenshot_path, full_page=True)
+        await page.close()
+        result = {
+            "title": title,
+            "reviews": [review.model_dump() for review in reviews]
+        }
+        if screenshot_path:
+            result["screenshot"] = screenshot_path
+        return result
+    except Exception as e:
+        await page.close()
+        return {
+            "error": "Ошибка при загрузке страницы",
+            "details": str(e)
+        }
 
 
 async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> List[Review]:
@@ -103,10 +166,7 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
         }''')
 
         if not next_data:
-            return {
-                "error": "Ошибка получения отзывов",
-                "details": "Пожалуйста, проверьте корректность URL"
-            }
+            return []
         try:
             data = json.loads(next_data)
             if 'props' in data and 'pageProps' in data['props']:
@@ -126,8 +186,10 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
     
     elif platform == Platform.PRODOCTOROV:
         # Ждем загрузки основного контента
-        await page.wait_for_selector(".b-review-card", timeout=5000)
-        
+        try:
+            await page.wait_for_selector(".b-review-card", timeout=5000)
+        except Exception:
+            return []
         # Получаем все отзывы одним запросом
         reviews_data = await page.evaluate(f'''() => {{
             const reviews = [];
@@ -166,6 +228,10 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
                 rating=review_data['rating'],
                 source=platform
             ))
+    
+    # for review in reviews:
+    #     if AI_API_KEY:
+    #         review.sentiment = await check_review_sentiment(review.message)
     
     return reviews
 
@@ -208,54 +274,6 @@ async def check_review_sentiment(text: str) -> str:
             logging.error(f"Ошибка парсинга ответа AI: {e}")
             return "unknown"
 
-
-app = fastapi.FastAPI()
-
-
-@app.get("/api/v1/getReviews")
-async def run_playwright(url: str = None, platform: Platform = None, all_reviews: bool = False):
-    if not url:
-        return {
-            "error": "Не указан параметр url",
-            "details": "Пожалуйста, укажите URL в параметрах запроса, например: /?url=https://docdoc.ru/doctor/SomeDoctor"
-        }
-    if not platform:
-        return {
-            "error": "Не указана платформа",
-            "details": "Пожалуйста, укажите платформу в параметрах запроса: platform=sberzdorovie или platform=prodoctorov"
-        }
-    return await fetch(url, platform, all_reviews)
-
-@app.post("/api/v1/checkSentiment")
-async def sentiment_route(request: Request):
-    """
-    Эндпоинт для проверки тональности одного отзыва.
-    Ожидает JSON: {"review": "..."}
-    """
-    try:
-        data = await request.json()
-    except Exception as e:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Некорректный JSON в теле запроса", "details": str(e)}
-        )
-    review = data.get("review")
-    if not review:
-        return {"error": "Не передан текст отзыва (review)"}
-    if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
-        return {"error": "AI_API_KEY, AI_API_URL, AI_MODEL не установлены в .env файле"}
-    sentiment = await check_review_sentiment(review)
-    return {"sentiment": sentiment}
-
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    index_path = pathlib.Path("index.html")
-    html = index_path.read_text(encoding="utf-8")
-    return HTMLResponse(content=html)
-
-@app.get('/favicon.ico')
-async def favicon():
-    return FileResponse('favicon.ico')
 
 if __name__ == "__main__":
 
