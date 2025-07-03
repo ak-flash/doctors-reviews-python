@@ -10,8 +10,7 @@ import httpx
 from dotenv import load_dotenv
 import logging
 from fastapi import Request
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 import hashlib
 from datetime import datetime
@@ -82,8 +81,11 @@ app = fastapi.FastAPI(lifespan=lifespan)
 async def index():
     with open("index.html", encoding="utf-8") as f:
         return HTMLResponse(f.read())
-        
-app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+
+@app.get('/favicon.ico')
+async def favicon():
+    return FileResponse('favicon.ico')
+            
 
 @app.get("/api/v1/getReviews")
 async def run_playwright(url: str = None, platform: Platform = None, all_reviews: bool = False):
