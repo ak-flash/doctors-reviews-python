@@ -1,3 +1,4 @@
+import asyncio
 import fastapi,uvicorn
 import json
 from typing import List
@@ -6,7 +7,7 @@ from enum import Enum
 # Camoufox here!
 from camoufox.async_api import AsyncCamoufox
 import os
-import httpx
+# import httpx  # Removed as we use sentiment_service
 from dotenv import load_dotenv
 import logging
 from fastapi import Request
@@ -14,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 import hashlib
 from datetime import datetime
+from sentiment_service import check_batch_reviews_sentiment, check_review_sentiment
 
 load_dotenv()
 AI_API_URL = os.getenv("AI_API_URL")
@@ -101,8 +103,10 @@ async def run_playwright(url: str = None, platform: Platform = None, all_reviews
 @app.post("/api/v1/checkSentiment")
 async def sentiment_route(request: Request):
     """
-    Эндпоинт для проверки тональности одного отзыва.
-    Ожидает JSON: {"review": "..."}
+    Эндпоинт для проверки тональности.
+    Поддерживает два формата:
+    1. Одиночный отзыв: {"review": "..."} -> {"sentiment": "..."}
+    2. Пакет отзывов: {"reviews": [{"id": "1", "text": "..."}, ...]} -> {"results": [{"id": "1", "sentiment": "..."}, ...]}
     """
     try:
         data = await request.json()
@@ -111,13 +115,36 @@ async def sentiment_route(request: Request):
             status_code=400,
             content={"error": "Некорректный JSON в теле запроса", "details": str(e)}
         )
-    review = data.get("review")
-    if not review:
-        return {"error": "Не передан текст отзыва (review)"}
+
     if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
         return {"error": "AI_API_KEY, AI_API_URL, AI_MODEL не установлены в .env файле"}
-    sentiment = await check_review_sentiment(review)
-    return {"sentiment": sentiment}
+
+    # 1. Обработка пакета отзывов (Batch)
+    if "reviews" in data and isinstance(data["reviews"], list):
+        reviews_data = data["reviews"]
+        if not reviews_data:
+            return {"results": []}
+
+        # Запускаем один запрос к API
+        return await check_batch_reviews_sentiment(reviews_data)
+
+    # 2. Обработка одного отзыва (Legacy)
+    review = data.get("review")
+    if not review:
+        return {"error": "Не передан текст отзыва (review) или список отзывов (reviews)"}
+    
+    try:
+        sentiment = await check_review_sentiment(review)
+        return {"sentiment": sentiment}
+    except Exception as e:
+        logging.error(f"Sentiment Analysis Error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Ошибка при анализе тональности",
+                "details": str(e)
+            }
+        )
 
 
 
@@ -125,7 +152,21 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
     # Модифицируем URL в зависимости от платформы
     url = modify_url_for_platform(url, platform, all_reviews)
     browser_context = app.state.browser_context
-    page = await browser_context.new_page()
+    
+    # Пытаемся переиспользовать существующую пустую вкладку, если она есть
+    # Это предотвращает открытие второго окна/вкладки, если браузер только что запустился
+    should_close_page = True
+    if len(browser_context.pages) > 0:
+        page = browser_context.pages[0]
+        # Если вкладка пустая (обычно about:blank), используем её
+        if page.url == "about:blank":
+            should_close_page = False
+        else:
+            # Если первая вкладка занята, создаем новую
+            page = await browser_context.new_page()
+    else:
+        page = await browser_context.new_page()
+
     try:
         await page.goto(url, timeout=30000, wait_until='networkidle')
         title = await page.title()
@@ -138,7 +179,18 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
             screenshot_path = f"screenshots/{timestamp}_{url_hash}.png"
             await page.screenshot(path=screenshot_path, full_page=True)
-        await page.close()
+        
+        # Закрываем вкладку только если мы её создавали, или если хотим очистить
+        if should_close_page:
+            await page.close()
+        else:
+            # Если мы переиспользовали вкладку, лучше очистить её для следующего раза
+            # Но не закрывать, чтобы не закрыть браузер (если это единственная вкладка)
+            try:
+                await page.goto("about:blank")
+            except Exception:
+                pass # Игнорируем ошибки очистки
+                
         result = {
             "title": title,
             "reviews": [review.model_dump() for review in reviews]
@@ -147,7 +199,12 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
             result["screenshot"] = screenshot_path
         return result
     except Exception as e:
-        await page.close()
+        # Если была ошибка, пытаемся закрыть вкладку, если мы её создавали
+        if should_close_page:
+            try:
+                await page.close()
+            except Exception:
+                pass
         return {
             "error": "Ошибка при загрузке страницы",
             "details": str(e)
@@ -233,45 +290,6 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
     #         review.sentiment = await check_review_sentiment(review.message)
     
     return reviews
-
-
-async def check_review_sentiment(text: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json"
-        # "HTTP-Referer": "<YOUR_SITE_URL>",  # если нужно
-        # "X-Title": "<YOUR_SITE_NAME>",      # если нужно
-    }
-    payload = {
-        "model": AI_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": f"Определи, является ли этот отзыв положительным или отрицательным. Ответь только 'positive' или 'negative'. Отзыв: {text}"
-            }
-        ]
-    }
-    # Гарантируем, что /chat/completions всегда в конце URL
-    api_url = AI_API_URL.rstrip('/')
-    if not api_url.endswith('/chat/completions'):
-        api_url = f"{api_url}/chat/completions"
-    async with httpx.AsyncClient() as client:
-        response = await client.post(api_url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        logging.info(f"AI API response for text '{text[:30]}...': {result}")
-        # Парсим ответ
-        try:
-            content = result["choices"][0]["message"]["content"].strip().lower()
-            if "negative" in content:
-                return "negative"
-            elif "positive" in content:
-                return "positive"
-            else:
-                return content
-        except Exception as e:
-            logging.error(f"Ошибка парсинга ответа AI: {e}")
-            return "unknown"
 
 
 if __name__ == "__main__":
