@@ -22,7 +22,8 @@ https://doc-reviews.ak-vps.ru/docs
     https://prodoctorov.ru/moskva/vrach/ivanov_ivan/
 
 Используемые модули:
-    patchright
+    camoufox
+    playwright
     fastapi
     
 Настройки анализ сентиментальности отзыва (дополнительно):
@@ -54,11 +55,15 @@ https://doc-reviews.ak-vps.ru/docs
 OR
 
 #### Manual install
-    pip install patchright fastapi[standard]
+    pip install camoufox playwright fastapi[standard] uvicorn
 
 
-## Install chrome browser
-    patchright install chrome
+## Install browser
+    # Camoufox автоматически загрузит браузер при первом запуске, но можно сделать это вручную:
+    python -m camoufox fetch
 
-## Run script in virtual monitor
+## Run script in virtual monitor (Linux)
     xvfb-run --server-args="-screen 0 1024x768x24" /home/ubuntu/doctors-reviews/venv/bin/python main.py
+
+## Run script on Windows
+    python main.py

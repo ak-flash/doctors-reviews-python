@@ -3,8 +3,8 @@ import json
 from typing import List
 from pydantic import BaseModel
 from enum import Enum
-# patchright here!
-from patchright.async_api import async_playwright
+# Camoufox here!
+from camoufox.async_api import AsyncCamoufox
 import os
 import httpx
 from dotenv import load_dotenv
@@ -60,19 +60,16 @@ def modify_url_for_platform(url: str, platform: Platform, all_reviews: bool = Fa
 # Глобальный браузер через lifespan
 @asynccontextmanager
 async def lifespan(app):
-    app.state.playwright = await async_playwright().start()
-    app.state.browser_context = await app.state.playwright.chromium.launch_persistent_context(
-        user_data_dir="data",
-        channel="chrome",
+    # Camoufox automatically handles Playwright start/stop
+    # We use persistent_context=True to keep session data in user_data_dir
+    async with AsyncCamoufox(
         headless=False,
-        no_viewport=True,
+        user_data_dir="data",
+        persistent_context=True,
         args=['--no-sandbox', '--disable-setuid-sandbox']
-    )
-    try:
+    ) as context:
+        app.state.browser_context = context
         yield
-    finally:
-        await app.state.browser_context.close()
-        await app.state.playwright.stop()
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
