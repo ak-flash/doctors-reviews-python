@@ -212,6 +212,8 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
         await asyncio.sleep(5) # Даем скриптам на странице время на инициализацию
         title = await page.title()
         reviews = await parse_reviews(platform, page, all_reviews)
+        logging.info(f"Parsed {len(reviews)} reviews from {url}")
+        
         # --- Сохраняем скриншот ---
         screenshot_path = None
         if SAVE_SCREENSHOT:
@@ -219,7 +221,11 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
             url_hash = hashlib.md5(url.encode()).hexdigest()
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
             screenshot_path = f"screenshots/{timestamp}_{url_hash}.png"
-            await page.screenshot(path=screenshot_path, full_page=True)
+            try:
+                await page.screenshot(path=screenshot_path, full_page=True)
+            except Exception as e:
+                logging.warning(f"Full page screenshot failed (likely too large): {e}. Taking viewport screenshot instead.")
+                await page.screenshot(path=screenshot_path, full_page=False)
         
         # Всегда закрываем вкладку после работы
         await page.close()
