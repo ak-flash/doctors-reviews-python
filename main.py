@@ -23,11 +23,13 @@ AI_API_KEY = os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL")  # Например: distilbert-base-uncased-finetuned-sst-2-english
 SAVE_SCREENSHOT = os.getenv("SAVE_SCREENSHOT", "true").lower() == "true"
 
+from logging.handlers import RotatingFileHandler
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
     handlers=[
-        logging.FileHandler("app.log", encoding="utf-8"),
+        RotatingFileHandler("app.log", maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), # 5 MB limit, keep 1 backup
         logging.StreamHandler()
     ]
 )
