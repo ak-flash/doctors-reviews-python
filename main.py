@@ -66,11 +66,37 @@ async def lifespan(app):
     # We use persistent_context=True to keep session data in user_data_dir
     async with AsyncCamoufox(
         headless=False,
+        humanize=True,  # Включаем имитацию человеческого поведения курсора
         user_data_dir="data",
         persistent_context=True,
         args=['--no-sandbox', '--disable-setuid-sandbox']
     ) as context:
         app.state.browser_context = context
+        
+        # --- Warm-up: Открываем главные страницы для "прогрева" сессии ---
+        logging.info("Warming up browser: checking background tabs...")
+        
+        # Проверяем, открыты ли уже эти страницы (например, восстановлены из сессии)
+        pages = context.pages
+        docdoc_open = any("docdoc.ru" in p.url for p in pages)
+        prodoctorov_open = any("prodoctorov.ru" in p.url for p in pages)
+        
+        try:
+            if not docdoc_open:
+                logging.info("Opening SberZdorovie (docdoc.ru)...")
+                p1 = await context.new_page()
+                await p1.goto("https://docdoc.ru", timeout=60000, wait_until="domcontentloaded")
+            
+            if not prodoctorov_open:
+                logging.info("Opening ProDoctorov...")
+                p2 = await context.new_page()
+                await p2.goto("https://prodoctorov.ru", timeout=60000, wait_until="domcontentloaded")
+                
+        except Exception as e:
+            logging.error(f"Warm-up error: {e}")
+            
+        logging.info("Browser warm-up complete.")
+        
         yield
 
 
@@ -153,22 +179,14 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
     url = modify_url_for_platform(url, platform, all_reviews)
     browser_context = app.state.browser_context
     
-    # Пытаемся переиспользовать существующую пустую вкладку, если она есть
-    # Это предотвращает открытие второго окна/вкладки, если браузер только что запустился
-    should_close_page = True
-    if len(browser_context.pages) > 0:
-        page = browser_context.pages[0]
-        # Если вкладка пустая (обычно about:blank), используем её
-        if page.url == "about:blank":
-            should_close_page = False
-        else:
-            # Если первая вкладка занята, создаем новую
-            page = await browser_context.new_page()
-    else:
-        page = await browser_context.new_page()
+    # Всегда создаем новую вкладку для новой задачи
+    # Это гарантирует, что мы не помешаем фоновым вкладкам (docdoc/prodoctorov)
+    page = await browser_context.new_page()
 
     try:
-        await page.goto(url, timeout=30000, wait_until='networkidle')
+        # Увеличиваем таймаут до 60 секунд и добавляем паузу после загрузки
+        await page.goto(url, timeout=60000, wait_until='networkidle')
+        await asyncio.sleep(3) # Даем скриптам на странице время на инициализацию
         title = await page.title()
         reviews = await parse_reviews(platform, page, all_reviews)
         # --- Сохраняем скриншот ---
@@ -180,16 +198,8 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
             screenshot_path = f"screenshots/{timestamp}_{url_hash}.png"
             await page.screenshot(path=screenshot_path, full_page=True)
         
-        # Закрываем вкладку только если мы её создавали, или если хотим очистить
-        if should_close_page:
-            await page.close()
-        else:
-            # Если мы переиспользовали вкладку, лучше очистить её для следующего раза
-            # Но не закрывать, чтобы не закрыть браузер (если это единственная вкладка)
-            try:
-                await page.goto("about:blank")
-            except Exception:
-                pass # Игнорируем ошибки очистки
+        # Всегда закрываем вкладку после работы
+        await page.close()
                 
         result = {
             "title": title,
@@ -199,12 +209,11 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
             result["screenshot"] = screenshot_path
         return result
     except Exception as e:
-        # Если была ошибка, пытаемся закрыть вкладку, если мы её создавали
-        if should_close_page:
-            try:
-                await page.close()
-            except Exception:
-                pass
+        # Если была ошибка, закрываем вкладку
+        try:
+            await page.close()
+        except Exception:
+            pass
         return {
             "error": "Ошибка при загрузке страницы",
             "details": str(e)
@@ -243,7 +252,7 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
     elif platform == Platform.PRODOCTOROV:
         # Ждем загрузки основного контента
         try:
-            await page.wait_for_selector(".b-review-card", timeout=5000)
+            await page.wait_for_selector(".b-review-card", timeout=15000)
         except Exception:
             return []
         # Получаем все отзывы одним запросом
