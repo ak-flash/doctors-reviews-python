@@ -64,6 +64,7 @@ def modify_url_for_platform(url: str, platform: Platform, all_reviews: bool = Fa
 async def lifespan(app):
     # Camoufox automatically handles Playwright start/stop
     # We use persistent_context=True to keep session data in user_data_dir
+    print("Starting Camoufox browser...")
     async with AsyncCamoufox(
         headless=False,
         humanize=True,  # Включаем имитацию человеческого поведения курсора
@@ -82,14 +83,32 @@ async def lifespan(app):
         prodoctorov_open = any("prodoctorov.ru" in p.url for p in pages)
         
         try:
+            # Получаем первую пустую страницу (если она есть), чтобы не плодить окна
+            empty_page = None
+            for p in pages:
+                if p.url == "about:blank":
+                    empty_page = p
+                    break
+
             if not docdoc_open:
                 logging.info("Opening SberZdorovie (docdoc.ru)...")
-                p1 = await context.new_page()
+                # Используем пустую страницу или создаем новую
+                if empty_page:
+                    p1 = empty_page
+                    empty_page = None # Использовали
+                else:
+                    p1 = await context.new_page()
+                
                 await p1.goto("https://docdoc.ru", timeout=60000, wait_until="domcontentloaded")
             
             if not prodoctorov_open:
                 logging.info("Opening ProDoctorov...")
-                p2 = await context.new_page()
+                # Если осталась пустая страница (вряд ли, но вдруг), используем её
+                if empty_page:
+                    p2 = empty_page
+                else:
+                    p2 = await context.new_page()
+                    
                 await p2.goto("https://prodoctorov.ru", timeout=60000, wait_until="domcontentloaded")
                 
         except Exception as e:
@@ -98,6 +117,8 @@ async def lifespan(app):
         logging.info("Browser warm-up complete.")
         
         yield
+
+# async def get_browser_context(): ... (Removed)
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
@@ -116,48 +137,48 @@ async def favicon():
 async def run_playwright(url: str = None, platform: Platform = None, all_reviews: bool = False):
     if not url:
         return {
-            "error": "Не указан параметр url",
-            "details": "Пожалуйста, укажите URL в параметрах запроса, например: /?url=https://docdoc.ru/doctor/SomeDoctor"
+            "error": "URL parameter missing",
+            "details": "Please provide URL in query parameters, e.g.: /?url=https://docdoc.ru/doctor/SomeDoctor"
         }
     if not platform:
         return {
-            "error": "Не указана платформа",
-            "details": "Пожалуйста, укажите платформу в параметрах запроса: platform=sberzdorovie или platform=prodoctorov"
+            "error": "Platform missing",
+            "details": "Please provide platform in query parameters: platform=sberzdorovie or platform=prodoctorov"
         }
     return await fetch(url, platform, all_reviews)
 
 @app.post("/api/v1/checkSentiment")
 async def sentiment_route(request: Request):
     """
-    Эндпоинт для проверки тональности.
-    Поддерживает два формата:
-    1. Одиночный отзыв: {"review": "..."} -> {"sentiment": "..."}
-    2. Пакет отзывов: {"reviews": [{"id": "1", "text": "..."}, ...]} -> {"results": [{"id": "1", "sentiment": "..."}, ...]}
+    Endpoint for sentiment analysis.
+    Supports two formats:
+    1. Single review: {"review": "..."} -> {"sentiment": "..."}
+    2. Batch reviews: {"reviews": [{"id": "1", "text": "..."}, ...]} -> {"results": [{"id": "1", "sentiment": "..."}, ...]}
     """
     try:
         data = await request.json()
     except Exception as e:
         return JSONResponse(
             status_code=400,
-            content={"error": "Некорректный JSON в теле запроса", "details": str(e)}
+            content={"error": "Invalid JSON in request body", "details": str(e)}
         )
 
     if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
-        return {"error": "AI_API_KEY, AI_API_URL, AI_MODEL не установлены в .env файле"}
+        return {"error": "AI_API_KEY, AI_API_URL, AI_MODEL not set in .env file"}
 
-    # 1. Обработка пакета отзывов (Batch)
+    # 1. Batch processing
     if "reviews" in data and isinstance(data["reviews"], list):
         reviews_data = data["reviews"]
         if not reviews_data:
             return {"results": []}
 
-        # Запускаем один запрос к API
+        # Run one request to API
         return await check_batch_reviews_sentiment(reviews_data)
 
-    # 2. Обработка одного отзыва (Legacy)
+    # 2. Single review processing (Legacy)
     review = data.get("review")
     if not review:
-        return {"error": "Не передан текст отзыва (review) или список отзывов (reviews)"}
+        return {"error": "Review text (review) or list of reviews (reviews) missing"}
     
     try:
         sentiment = await check_review_sentiment(review)
@@ -167,7 +188,7 @@ async def sentiment_route(request: Request):
         return JSONResponse(
             status_code=500,
             content={
-                "error": "Ошибка при анализе тональности",
+                "error": "Sentiment analysis error",
                 "details": str(e)
             }
         )
@@ -177,6 +198,8 @@ async def sentiment_route(request: Request):
 async def fetch(url: str, platform: Platform, all_reviews: bool = False):
     # Модифицируем URL в зависимости от платформы
     url = modify_url_for_platform(url, platform, all_reviews)
+    
+    # Используем глобальный контекст
     browser_context = app.state.browser_context
     
     # Всегда создаем новую вкладку для новой задачи
@@ -186,7 +209,7 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
     try:
         # Увеличиваем таймаут до 60 секунд и добавляем паузу после загрузки
         await page.goto(url, timeout=60000, wait_until='networkidle')
-        await asyncio.sleep(3) # Даем скриптам на странице время на инициализацию
+        await asyncio.sleep(5) # Даем скриптам на странице время на инициализацию
         title = await page.title()
         reviews = await parse_reviews(platform, page, all_reviews)
         # --- Сохраняем скриншот ---
@@ -215,7 +238,7 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
         except Exception:
             pass
         return {
-            "error": "Ошибка при загрузке страницы",
+            "error": "Page load error",
             "details": str(e)
         }
 
@@ -224,6 +247,13 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
     reviews: List[Review] = []
     
     if platform == Platform.SBERZDOROVIE:
+        # Ждем появления скрипта с данными (обходим возможные спиннеры/проверки на бота)
+        try:
+            # Script тег не видимый, поэтому ждем state='attached'
+            await page.wait_for_selector("#__NEXT_DATA__", state="attached", timeout=20000)
+        except Exception:
+            return []
+
         # Получаем данные из скрипта
         next_data = await page.evaluate('''() => {
             const script = document.getElementById('__NEXT_DATA__');
