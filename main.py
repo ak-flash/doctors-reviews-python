@@ -1,12 +1,14 @@
 import asyncio
 import fastapi,uvicorn
 import json
+import random
 from typing import List
 from pydantic import BaseModel
 from enum import Enum
 # Camoufox here!
 from camoufox.async_api import AsyncCamoufox
 import os
+import sys
 # import httpx  # Removed as we use sentiment_service
 from dotenv import load_dotenv
 import logging
@@ -16,6 +18,8 @@ from contextlib import asynccontextmanager
 import hashlib
 from datetime import datetime
 from sentiment_service import check_batch_reviews_sentiment, check_review_sentiment
+if sys.platform.startswith('linux'):
+    from pyvirtualdisplay import Display
 
 load_dotenv()
 AI_API_URL = os.getenv("AI_API_URL")
@@ -66,59 +70,100 @@ def modify_url_for_platform(url: str, platform: Platform, all_reviews: bool = Fa
 async def lifespan(app):
     # Camoufox automatically handles Playwright start/stop
     # We use persistent_context=True to keep session data in user_data_dir
-    print("Starting Camoufox browser...")
-    async with AsyncCamoufox(
-        headless=False,
-        humanize=True,  # Включаем имитацию человеческого поведения курсора
-        user_data_dir="data",
-        persistent_context=True,
-        args=['--no-sandbox', '--disable-setuid-sandbox']
-    ) as context:
-        app.state.browser_context = context
-        
-        # --- Warm-up: Открываем главные страницы для "прогрева" сессии ---
-        logging.info("Warming up browser: checking background tabs...")
-        
-        # Проверяем, открыты ли уже эти страницы (например, восстановлены из сессии)
-        pages = context.pages
-        docdoc_open = any("docdoc.ru" in p.url for p in pages)
-        prodoctorov_open = any("prodoctorov.ru" in p.url for p in pages)
-        
-        try:
-            # Получаем первую пустую страницу (если она есть), чтобы не плодить окна
-            empty_page = None
-            for p in pages:
-                if p.url == "about:blank":
-                    empty_page = p
-                    break
+    logging.info("Starting Camoufox browser...")
+    # На Linux используем headless=False (возможно, это лучше для обхода защиты)
+    headless_mode = False  # Отключаем headless, чтобы избежать детектирования
+    logging.info(f"Platform: {sys.platform}, headless: {headless_mode}")
+    try:
+        async with AsyncCamoufox(
+            headless=headless_mode,
+            humanize=True,  # Включаем имитацию человеческого поведения курсора
+            user_data_dir="data",
+            persistent_context=True,
+            args=[
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage'
+            ]
+            ) as context:
+                app.state.browser_context = context
+                
+                # Добавляем скрипт для скрытия автоматизации
+                anti_detect_script = """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+                window.chrome = {
+                    runtime: {}
+                };
+                """
+                
+                await context.add_init_script(anti_detect_script)
+                
+                # --- Warm-up: Открываем главные страницы для "прогрева" сессии ---
+                logging.info("Warming up browser: checking background tabs...")
+                
+                # Проверяем, открыты ли уже эти страницы (например, восстановлены из сессии)
+                pages = context.pages
+                docdoc_open = any("docdoc.ru" in p.url for p in pages)
+                prodoctorov_open = any("prodoctorov.ru" in p.url for p in pages)
+                
+                try:
+                    # Получаем первую пустую страницу (если она есть), чтобы не плодить окна
+                    empty_page = None
+                    for p in pages:
+                        if p.url == "about:blank":
+                            empty_page = p
+                            break
 
-            if not docdoc_open:
-                logging.info("Opening SberZdorovie (docdoc.ru)...")
-                # Используем пустую страницу или создаем новую
-                if empty_page:
-                    p1 = empty_page
-                    empty_page = None # Использовали
-                else:
-                    p1 = await context.new_page()
-                
-                await p1.goto("https://docdoc.ru", timeout=60000, wait_until="domcontentloaded")
-            
-            if not prodoctorov_open:
-                logging.info("Opening ProDoctorov...")
-                # Если осталась пустая страница (вряд ли, но вдруг), используем её
-                if empty_page:
-                    p2 = empty_page
-                else:
-                    p2 = await context.new_page()
+                    if not docdoc_open:
+                        logging.info("Opening SberZdorovie (docdoc.ru)...")
+                        await asyncio.sleep(random.uniform(2, 4))  # Задержка перед открытием
+                        # Используем пустую страницу или создаем новую
+                        if empty_page:
+                            p1 = empty_page
+                            empty_page = None # Использовали
+                        else:
+                            p1 = await context.new_page()
+                        
+                        await p1.goto("https://docdoc.ru", timeout=90000, wait_until="domcontentloaded")
+                        await asyncio.sleep(random.uniform(3, 6))  # Задержка после открытия
+                        # Прокручиваем страницу
+                        await p1.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                        await asyncio.sleep(random.uniform(1, 2))
+                        await p1.evaluate("window.scrollTo(0, 0)")
                     
-                await p2.goto("https://prodoctorov.ru", timeout=60000, wait_until="domcontentloaded")
+                    if not prodoctorov_open:
+                        logging.info("Opening ProDoctorov...")
+                        await asyncio.sleep(random.uniform(2, 4))  # Задержка перед открытием
+                        # Если осталась пустая страница (вряд ли, но вдруг), используем её
+                        if empty_page:
+                            p2 = empty_page
+                        else:
+                            p2 = await context.new_page()
+                            
+                        await p2.goto("https://prodoctorov.ru", timeout=90000, wait_until="domcontentloaded")
+                        await asyncio.sleep(random.uniform(3, 6))  # Задержка после открытия
+                        # Прокручиваем страницу
+                        await p2.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                        await asyncio.sleep(random.uniform(1, 2))
+                        await p2.evaluate("window.scrollTo(0, 0)")
+                        
+                except Exception as e:
+                    logging.error(f"Warm-up error: {e}")
+                    
+                logging.info("Browser warm-up complete.")
                 
-        except Exception as e:
-            logging.error(f"Warm-up error: {e}")
-            
-        logging.info("Browser warm-up complete.")
-        
-        yield
+                yield
+    except Exception as e:
+        logging.error(f"Browser startup error: {e}")
+        raise
 
 # async def get_browser_context(): ... (Removed)
 
@@ -209,9 +254,23 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
     page = await browser_context.new_page()
 
     try:
-        # Увеличиваем таймаут до 60 секунд и добавляем паузу после загрузки
-        await page.goto(url, timeout=60000, wait_until='networkidle')
-        await asyncio.sleep(5) # Даем скриптам на странице время на инициализацию
+        # Добавляем случайные задержки для имитации человеческого поведения
+        await asyncio.sleep(random.uniform(1, 3))
+        
+        # Увеличиваем таймаут до 90 секунд и используем более мягкие условия ожидания
+        await page.goto(url, timeout=90000, wait_until='domcontentloaded')
+        
+        # Случайная задержка после загрузки
+        await asyncio.sleep(random.uniform(3, 7))
+        
+        # Прокручиваем страницу для имитации человеческого скролла
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3)")
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 2 / 3)")
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(random.uniform(1, 3))
+        
         title = await page.title()
         reviews = await parse_reviews(platform, page, all_reviews)
         logging.info(f"Parsed {len(reviews)} reviews from {url}")
@@ -230,6 +289,7 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
                 await page.screenshot(path=screenshot_path, full_page=False)
         
         # Всегда закрываем вкладку после работы
+        await asyncio.sleep(random.uniform(0.5, 1.5))
         await page.close()
                 
         result = {
@@ -339,11 +399,94 @@ async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> 
     return reviews
 
 
-if __name__ == "__main__":
+async def manual_captcha_mode():
+    """Режим ручного прохождения капчи: запускает браузер и ждет, пока пользователь закроет его."""
+    print("=== РЕЖИМ РУЧНОГО ПРОХОЖДЕНИЯ КАПЧИ ===")
+    print("Браузер откроется, пройдите капчу на docdoc.ru и prodoctorov.ru,")
+    print("закройте браузер, когда закончите.")
+    print("Сессия будет сохранена в папке 'data'.")
+    print("-" * 50)
+    
+    headless_mode = False
+    async with AsyncCamoufox(
+        headless=headless_mode,
+        humanize=True,
+        user_data_dir="data",
+        persistent_context=True,
+        args=[
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage'
+        ]
+    ) as context:
+        # Добавляем антидетект-скрипт
+        anti_detect_script = """
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5]
+        });
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en']
+        });
+        window.chrome = {
+            runtime: {}
+        };
+        """
+        await context.add_init_script(anti_detect_script)
+        
+        # Открываем страницы для прохождения капчи
+        await asyncio.sleep(2)
+        
+        page1 = await context.new_page()
+        await page1.goto("https://docdoc.ru", timeout=120000)
+        print(">>> Открыта страница docdoc.ru")
+        
+        await asyncio.sleep(2)
+        
+        page2 = await context.new_page()
+        await page2.goto("https://prodoctorov.ru", timeout=120000)
+        print(">>> Открыта страница prodoctorov.ru")
+        
+        print("\nПройдите капчи на открытых страницах...")
+        print("Нажмите Ctrl+C в этом окне, когда закончите.")
+        
+        # Бесконечный цикл, пока пользователь не остановит
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            print("\nСохранение сессии...")
 
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        reload=False,
-        port=9000
-    )
+
+if __name__ == "__main__":
+    # Проверяем аргументы командной строки
+    if len(sys.argv) > 1 and sys.argv[1] == "--manual":
+        # Режим ручного прохождения капчи
+        print("=== РЕЖИМ РУЧНОГО ПРОХОЖДЕНИЯ КАПЧИ ===")
+        print("Если используете X11-forwarding, браузер откроется на вашем локальном компьютере.")
+        print("-" * 50)
+        
+        # В ручном режиме не используем pyvirtualdisplay, чтобы работал X11-forwarding
+        asyncio.run(manual_captcha_mode())
+    else:
+        # Обычный режим работы сервера
+        print("Запуск сервера... Для ручного прохождения капчи используйте: python main.py --manual")
+        if sys.platform.startswith('linux'):
+            # На Linux запускаем виртуальный дисплей
+            with Display(visible=0, size=(1024, 768)) as disp:
+                uvicorn.run(
+                    "main:app",
+                    host="0.0.0.0",
+                    reload=False,
+                    port=9000
+                )
+        else:
+            # На Windows и других платформах запускаем без виртуального дисплея
+            uvicorn.run(
+                "main:app",
+                host="0.0.0.0",
+                reload=False,
+                port=9000
+            )

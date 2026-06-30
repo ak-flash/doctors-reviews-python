@@ -55,15 +55,88 @@ https://doc-reviews.ak-vps.ru/docs
 OR
 
 #### Manual install
-    pip install camoufox playwright fastapi[standard] uvicorn
+    pip install camoufox playwright fastapi[standard] uvicorn pyvirtualdisplay
 
 
 ## Install browser
     # Camoufox автоматически загрузит браузер при первом запуске, но можно сделать это вручную:
     python -m camoufox fetch
 
-## Run script in virtual monitor (Linux)
-    xvfb-run --server-args="-screen 0 1024x768x24" /home/ubuntu/doctors-reviews/venv/bin/python main.py
+## Запуск скрипта
 
-## Run script on Windows
+### 1. Обычный запуск (на всех платформах)
+Скрипт автоматически определяет платформу и использует виртуальный дисплей на Linux:
     python main.py
+
+### 2. Ручной режим для прохождения капчи
+Используйте этот режим, если нужно пройти капчу вручную (сохраняет сессию в `data/`):
+    python main.py --manual
+
+На Linux через SSH можно использовать **X11-forwarding**, чтобы увидеть браузер локально:
+    ssh -X user@your-server-ip
+    # затем на сервере
+    python main.py --manual
+
+### 3. Если ошибки при запуске
+sudo apt update
+sudo apt install -y \
+  libgtk-3-0t64 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 \
+  libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
+  libxshmfence1 libxtst6 fonts-liberation libasound2t64 libdrm2 libgbm1 \
+  libatk1.0-0t64 libatk-bridge2.0-0t64 libpango-1.0-0 libcairo2 libxkbcommon0
+
+sudo ldconfig
+python main.py  
+
+## Ubuntu автозагрузка
+
+sudo nano /etc/systemd/system/doctors-reviews.service
+
+[Unit]
+Description=Doctors Reviews API Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/doctors-reviews
+ExecStart=/home/ubuntu/doctors-reviews/venv/bin/python /home/ubuntu/doctors-reviews/main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
+Примените изменения и включите сервис:
+sudo systemctl daemon-reload
+sudo systemctl enable doctors-reviews.service
+sudo systemctl start doctors-reviews.service
+
+Проверьте статус и логи:
+systemctl status doctors-reviews.service
+journalctl -u doctors-reviews.service -f   # логи в реальном времени
+
+## nginx конфиг
+
+location / {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_http_version 1.1;
+        
+        # Стандартные прокси-заголовки
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Поддержка WebSocket (если понадобится)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Таймауты для браузерных операций
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 300s;
+    }
