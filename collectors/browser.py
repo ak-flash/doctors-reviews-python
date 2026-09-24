@@ -161,9 +161,14 @@ class CamoufoxClient:
                     if status >= 400:
                         raise SourceHTTPError(f"Browser returned HTTP {status}", status_code=status)
                     selector = '#__NEXT_DATA__' if platform == Platform.SBERZDOROVIE else '.b-review-card__comment'
-                    await page.wait_for_selector(selector, state="attached", timeout=self.timeout * 1000)
+                    try:
+                        await page.wait_for_selector(selector, state="attached", timeout=min(self.timeout * 1000, 15000))
+                    except Exception:
+                        logger.warning("Browser selector not found platform=%s selector=%s; parsing current page", platform.value, selector)
                     validate_url_shape(page.url, platform)
                     content = await page.content()
+                    if is_blocked_content(status, content):
+                        raise SourceBlockedError("Browser returned a verification or blocking page", status_code=status)
                     if len(content.encode("utf-8")) > self.max_response_bytes:
                         raise ResponseTooLargeError("Browser response exceeds configured limit")
                     if failures:

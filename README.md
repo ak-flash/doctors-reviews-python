@@ -37,118 +37,187 @@ https://doc-reviews.ak-vps.ru/docs
 `AI_API_URL` должен быть base URL API, обычно с `/v1`; если указать полный URL `/chat/completions`, приложение автоматически удалит этот суффикс.
 
 
-## Установка
+## Установка на Ubuntu-сервер
 
-    sudo apt-get install python3 python3-pip python3-venv
+Рекомендуемый способ — Docker Compose. Команды выполняются от пользователя с `sudo`.
 
-## Create a virtual environment 
-    python -m venv venv
+### 1. Установить Docker
 
-## Activate the virtual environment
-
-#### on Windows
-    venv\Scripts\activate.bat
-
-#### on macOS and Linux
-    source venv/bin/activate
-
-## Install packages
-#### Install using requirements
-    pip install -r requirements.txt
-
-OR
-
-#### Manual install
-    pip install curl_cffi fastapi[standard] uvicorn
-
-## Запуск скрипта
-
-### 1. Обычный запуск (на всех платформах)
-Скрипт запускает HTTP-сборщики без браузера:
-    python main.py
-
-## Обновление Docker-контейнера
-
-После изменения кода или зависимостей выполните в корне проекта:
-
-```powershell
-docker compose up -d --build --force-recreate --wait
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl git
+curl -fsSL https://get.docker.com | sudo sh
+sudo systemctl enable --now docker
 ```
 
-Проверить состояние контейнера:
+Проверить установку:
 
-```powershell
+```bash
+sudo docker --version
+sudo docker compose version
+```
+
+### 2. Скачать проект
+
+```bash
+sudo mkdir -p /opt/doctors-reviews
+sudo chown "$USER":"$USER" /opt/doctors-reviews
+git clone https://github.com/ak-flash/doctors-reviews-python /opt/doctors-reviews
+cd /opt/doctors-reviews
+```
+
+Если каталог уже содержит проект:
+
+```bash
+cd /opt/doctors-reviews
+git pull
+```
+
+### 3. Настроить `.env`
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Минимальные настройки:
+
+```dotenv
+AI_API_URL=https://openrouter.ai/api/v1
+AI_API_KEY=your-provider-api-key
+AI_MODEL=provider/model-name
+API_AUTH_ENABLED=true
+API_KEY=change-this-api-key
+CORS_ORIGINS=https://your-domain.example
+```
+
+`AI_API_URL`, `AI_API_KEY` и `AI_MODEL` должны относиться к одному OpenAI-compatible провайдеру. Не добавляйте `.env` в публичный репозиторий.
+
+### 4. Запустить API
+
+```bash
+docker compose up -d --build --force-recreate --wait
 docker compose ps
+curl http://127.0.0.1:9000/health
+```
+
+Логи:
+
+```bash
 docker compose logs -f web
 ```
 
-Если контейнер не обновился, пересоздайте его полностью:
+API будет доступен локально на `http://127.0.0.1:9000`. Документация: `/docs`.
 
-```powershell
-docker compose down
+### Обновление после изменений
+
+```bash
+cd /opt/doctors-reviews
+git pull
 docker compose up -d --build --force-recreate --wait
 ```
 
-### 3. Если ошибки при запуске
+### Остановка
+
+```bash
+docker compose down
+```
+
+## Установка без Docker
+
+```bash
 sudo apt update
-sudo apt install -y \
-  libgtk-3-0t64 libnss3 libx11-6 libxcb1 libxcomposite1 libxcursor1 \
-  libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 \
-  libxshmfence1 libxtst6 fonts-liberation libasound2t64 libdrm2 libgbm1 \
-  libatk1.0-0t64 libatk-bridge2.0-0t64 libpango-1.0-0 libcairo2 libxkbcommon0
+sudo apt install -y python3 python3-pip python3-venv git
+cd /opt
+git clone https://github.com/ak-flash/doctors-reviews-python doctors-reviews
+cd doctors-reviews
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.example .env
+nano .env
+python main.py
+```
 
-sudo ldconfig
-python main.py  
+Сервис слушает `0.0.0.0:9000`. Для постоянной работы используйте systemd.
 
-## Ubuntu автозагрузка
+## Автозапуск через systemd
 
-sudo nano /etc/systemd/system/doctors-reviews.service
+Создать `/etc/systemd/system/doctors-reviews.service`:
 
+```ini
 [Unit]
-Description=Doctors Reviews API Service
-After=network.target
-Wants=network.target
+Description=Doctors Reviews API
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/doctors-reviews
-ExecStart=/home/ubuntu/doctors-reviews/venv/bin/python /home/ubuntu/doctors-reviews/main.py
+WorkingDirectory=/opt/doctors-reviews
+ExecStart=/opt/doctors-reviews/venv/bin/python /opt/doctors-reviews/main.py
 Restart=on-failure
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
+```
 
-Примените изменения и включите сервис:
+Замените `User=ubuntu`, если проект запускается от другого пользователя. Затем:
+
+```bash
 sudo systemctl daemon-reload
-sudo systemctl enable doctors-reviews.service
-sudo systemctl start doctors-reviews.service
+sudo systemctl enable --now doctors-reviews
+sudo systemctl status doctors-reviews
+journalctl -u doctors-reviews -f
+```
 
-Проверьте статус и логи:
-systemctl status doctors-reviews.service
-journalctl -u doctors-reviews.service -f   # логи в реальном времени
+## Nginx reverse proxy
 
-## nginx конфиг
+```bash
+sudo apt install -y nginx
+sudo nano /etc/nginx/sites-available/doctors-reviews
+```
 
-location / {
+```nginx
+server {
+    listen 80;
+    server_name your-domain.example;
+
+    location / {
         proxy_pass http://127.0.0.1:9000;
         proxy_http_version 1.1;
-        
-        # Стандартные прокси-заголовки
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        
-        # Поддержка WebSocket (если понадобится)
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # Таймауты для браузерных операций
         proxy_connect_timeout 60s;
         proxy_send_timeout 120s;
         proxy_read_timeout 300s;
     }
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/doctors-reviews /etc/nginx/sites-enabled/doctors-reviews
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Для HTTPS установите Certbot и выпустите сертификат для своего домена:
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.example
+```
+
+## Проверка sentiment API
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/v1/checkSentiment \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: change-this-api-key' \
+  -d '{"review":"Врач помог, лечение дало отличный результат"}'
+```

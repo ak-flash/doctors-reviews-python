@@ -216,6 +216,17 @@ async def test_selector_timeout_returns_controlled_source_error(make_browser):
 
 
 @pytest.mark.asyncio
+async def test_selector_timeout_still_parses_loaded_page(make_browser):
+    page = FakePage(sber_html())
+    page.wait_for_selector.side_effect = TimeoutError("selector changed")
+    client, _, _, _ = make_browser(page)
+    result = await client.collect(SBER_URL, Platform.SBERZDOROVIE)
+    assert result.reviews[0].message == "Хороший врач"
+    page.close.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_browser_dom_size_limit(make_browser):
     page = FakePage(sber_html())
     client, _, _, _ = make_browser(page, max_response_bytes=8)
