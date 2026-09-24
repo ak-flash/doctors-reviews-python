@@ -48,6 +48,25 @@ async def test_curl_browser_profile_and_response_adapter(curl_session_factory, h
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_proxy_is_passed_to_curl(curl_session_factory):
+    session = curl_session_factory(lambda request: httpx.Response(200, text="Reviews"))
+    async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=AsyncMock(), proxy="http://proxy.example:8080") as client:
+        await client.get("https://docdoc.ru/doctor/a")
+
+    assert session.get.call_args.kwargs["proxy"] == "http://proxy.example:8080"
+
+
+@pytest.mark.asyncio
+async def test_httpx_proxy_is_configured(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+    client = HTTPClient(("example.org",), url_validator=AsyncMock())
+    async with client:
+        assert client._https_proxy == "http://proxy.example:8080"
+        assert client._proxy_for("https://example.org") == "http://proxy.example:8080"
+
+
+@pytest.mark.asyncio
 async def test_other_domains_use_httpx(curl_session_factory):
     session = curl_session_factory(lambda request: pytest.fail("Unexpected curl request"))
     handler = Mock(return_value=httpx.Response(200, text="Reviews"))

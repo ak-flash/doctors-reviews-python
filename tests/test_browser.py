@@ -69,6 +69,16 @@ def make_browser(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_browser_proxy_is_passed_to_camoufox(make_browser):
+    page = FakePage(sber_html())
+    client, _, _, factory = make_browser(page, proxy="http://proxy.example:8080")
+    await client.collect(SBER_URL, Platform.SBERZDOROVIE)
+    assert factory.call_args.kwargs["proxy"] == {"server": "http://proxy.example:8080"}
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_one_lazy_context_for_both_sources(make_browser):
     sber = FakePage(sber_html())
     pro = FakePage(PRO_HTML)

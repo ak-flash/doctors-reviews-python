@@ -47,12 +47,14 @@ class CamoufoxClient:
         max_response_bytes: int = 5_000_000,
         url_validator: URLValidator = validate_public_dns,
         factory: BrowserFactory | None = None,
+        proxy: str | None = None,
     ):
         self.profile_dir = profile_dir
         self.headless = headless
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
         self.url_validator = url_validator
+        self.proxy = proxy if proxy is not None else os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         self._factory = factory or _create_camoufox
         self._lock = asyncio.Lock()
         self._manager = None
@@ -84,6 +86,7 @@ class CamoufoxClient:
                 humanize=True,
                 locale="ru-RU",
                 service_workers="block",
+                proxy={"server": self.proxy} if self.proxy else None,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             )
             self._context = await self._manager.__aenter__()

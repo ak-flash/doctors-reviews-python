@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -43,6 +44,7 @@ class HTTPClient:
         client: httpx.AsyncClient | None = None,
         curl_session: curl_requests.Session | None = None,
         url_validator: URLValidator = validate_public_dns,
+        proxy: str | None = None,
     ):
         self.allowed_domains = tuple(domain.lower().rstrip(".") for domain in allowed_domains)
         self.timeout = timeout
@@ -50,6 +52,9 @@ class HTTPClient:
         self.retries = retries
         self.max_redirects = max_redirects
         self.url_validator = url_validator
+        self.proxy = proxy
+        self._http_proxy = os.getenv("HTTP_PROXY")
+        self._https_proxy = os.getenv("HTTPS_PROXY")
         self._client = client
         self._owns_client = client is None
         self._curl_session = curl_session
@@ -58,7 +63,12 @@ class HTTPClient:
 
     async def __aenter__(self) -> "HTTPClient":
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout, headers={"User-Agent": "DoctorsReviews/1.0", "Accept": "text/html,application/xhtml+xml"}, follow_redirects=False)
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                headers={"User-Agent": "DoctorsReviews/1.0", "Accept": "text/html,application/xhtml+xml"},
+                follow_redirects=False,
+                proxy=self._https_proxy or self._http_proxy,
+            )
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -92,6 +102,11 @@ class HTTPClient:
         host = (urlparse(url).hostname or "").lower().rstrip(".")
         return any(host == domain or host.endswith("." + domain) for domain in CURL_DOMAINS)
 
+    def _proxy_for(self, url: str) -> str | None:
+        if self.proxy is not None:
+            return self.proxy
+        return self._https_proxy if urlparse(url).scheme == "https" else self._http_proxy
+
     def _append_content(self, content: bytearray, chunk: bytes) -> int:
         if len(content) + len(chunk) > self.max_response_bytes:
             raise ResponseTooLargeError("Source response exceeds configured limit")
@@ -120,6 +135,7 @@ class HTTPClient:
                 impersonate="chrome",
                 timeout=self.timeout,
                 allow_redirects=False,
+                proxy=self._proxy_for(url),
                 content_callback=receive,
             )
             return _buffered_response(response, bytes(content), url)

@@ -93,6 +93,15 @@ CORS_ORIGINS=https://your-domain.example
 
 `AI_API_URL`, `AI_API_KEY` и `AI_MODEL` должны относиться к одному OpenAI-compatible провайдеру. Не добавляйте `.env` в публичный репозиторий.
 
+Если IP сервера блокируется источником, можно задать прокси для HTTP-запросов:
+
+```dotenv
+HTTP_PROXY=http://user:password@proxy-host:proxy-port
+HTTPS_PROXY=http://user:password@proxy-host:proxy-port
+```
+
+Для HTTPS-запросов используется `HTTPS_PROXY`; для HTTP — `HTTP_PROXY`. Поддерживаются HTTP/HTTPS proxy URL и прокси с авторизацией. Не вставляйте пароль от прокси в публичные файлы.
+
 ### 4. Запустить API
 
 ```bash
