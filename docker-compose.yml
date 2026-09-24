@@ -6,10 +6,21 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: doctors-reviews-api
+    init: true
+    shm_size: "256mb"
     ports:
       - "9000:9000"
     volumes:
       - ./data:/app/data
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
-    restart: unless-stopped 
+      - BROWSER_PROFILE_DIR=/tmp/doctors-reviews-browser
+      - BROWSER_HEADLESS=false
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

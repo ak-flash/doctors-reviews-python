@@ -1,8 +1,7 @@
 import os
 import json
 import logging
-import asyncio
-from typing import List, Dict, Any
+from typing import List
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, APIError, RateLimitError
 
@@ -12,22 +11,19 @@ AI_API_URL = os.getenv("AI_API_URL")
 AI_API_KEY = os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL")
 
-# Настройка клиента OpenAI
-# OpenRouter требует базовый URL заканчивающийся на /v1, но библиотека openai сама добавляет /chat/completions к base_url?
-# Нет, base_url в openai должен указывать на корень API, например https://openrouter.ai/api/v1
-# Если AI_API_URL у нас https://openrouter.ai/api/v1, то все ок.
-# Если там /chat/completions, надо обрезать.
+def normalize_base_url(url: str | None) -> str | None:
+    if not url:
+        return url
+    normalized = url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        normalized = normalized.removesuffix("/chat/completions")
+    return normalized
 
-base_url = AI_API_URL
-if base_url and base_url.endswith("/chat/completions"):
-    base_url = base_url.replace("/chat/completions", "")
-if base_url and base_url.endswith("/"):
-    base_url = base_url.rstrip("/")
 
 client = AsyncOpenAI(
-    base_url=base_url,
+    base_url=normalize_base_url(AI_API_URL),
     api_key=AI_API_KEY,
-    max_retries=3  # Библиотека сама умеет делать ретраи
+    max_retries=3,
 )
 
 async def check_batch_reviews_sentiment(reviews_data: List[dict]) -> dict:

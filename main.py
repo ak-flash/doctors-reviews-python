@@ -1,492 +1,191 @@
 import asyncio
-import fastapi,uvicorn
-import json
-import random
-from typing import List
-from pydantic import BaseModel
-from enum import Enum
-# Camoufox here!
-from camoufox.async_api import AsyncCamoufox
+import secrets
+import logging
 import os
 import sys
-# import httpx  # Removed as we use sentiment_service
-from dotenv import load_dotenv
-import logging
-from fastapi import Request
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+import time
 from contextlib import asynccontextmanager
-import hashlib
-from datetime import datetime
+
+import fastapi
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+
+from app.cache import AsyncTTLCache
+from app.limiter import FixedWindowRateLimiter
+from app import security
+from collectors.base import CollectorError, EmptyResponseError, InvalidURLError, Platform, SOURCE_CONFIGS, SourceBlockedError
+from collectors.http_client import HTTPClient
+from collectors.browser import close_browser, stats as browser_stats
+from collectors.prodoctorov import ProdoctorovCollector
+from collectors.sberzdorovie import SberZdorovieCollector
 from sentiment_service import check_batch_reviews_sentiment, check_review_sentiment
-if sys.platform.startswith('linux'):
-    from pyvirtualdisplay import Display
 
 load_dotenv()
 AI_API_URL = os.getenv("AI_API_URL")
 AI_API_KEY = os.getenv("AI_API_KEY")
-AI_MODEL = os.getenv("AI_MODEL")  # Например: distilbert-base-uncased-finetuned-sst-2-english
-SAVE_SCREENSHOT = os.getenv("SAVE_SCREENSHOT", "true").lower() == "true"
-
-from logging.handlers import RotatingFileHandler
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[
-        RotatingFileHandler("app.log", maxBytes=5*1024*1024, backupCount=1, encoding="utf-8"), # 5 MB limit, keep 1 backup
-        logging.StreamHandler()
-    ]
-)
-
-class Platform(str, Enum):
-    SBERZDOROVIE = "sberzdorovie"
-    PRODOCTOROV = "prodoctorov"
+AI_MODEL = os.getenv("AI_MODEL")
+API_AUTH_ENABLED = os.getenv("API_AUTH_ENABLED", "false").lower() in {"1", "true", "yes"}
+API_KEY = os.getenv("API_KEY", "")
+SENTIMENT_MAX_BODY_BYTES = int(os.getenv("SENTIMENT_MAX_BODY_BYTES", "1048576"))
+CACHE_TTL = float(os.getenv("CACHE_TTL_SECONDS", "900"))
+BLOCKED_CACHE_TTL = float(os.getenv("BLOCKED_CACHE_TTL_SECONDS", "30"))
+CACHE_MAX_ENTRIES = int(os.getenv("CACHE_MAX_ENTRIES", "256"))
+MAX_RESULT_REVIEWS = int(os.getenv("MAX_RESULT_REVIEWS", "200"))
+RATE_LIMIT = int(os.getenv("RATE_LIMIT", "30"))
+RATE_WINDOW = float(os.getenv("RATE_WINDOW_SECONDS", "60"))
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_COLLECTIONS", "10"))
+CORS_ORIGINS = [item.strip() for item in os.getenv("CORS_ORIGINS", "").split(",") if item.strip()]
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=[logging.StreamHandler(), logging.FileHandler("app.log", encoding="utf-8")])
+logger = logging.getLogger(__name__)
+metrics = {"requests": 0, "cache_hits": 0, "fallbacks": 0, "errors": 0}
 
 
-class Review(BaseModel):
-    id: str
-    name: str
-    date: str
-    date_beauty: str
-    message: str
-    rating: int
-    source: str
-
-
-def modify_url_for_platform(url: str, platform: Platform, all_reviews: bool = False) -> str:
-    if platform == Platform.PRODOCTOROV:
-        # Убираем trailing slash если есть
-        url = url.rstrip('/')
-        # Проверяем, есть ли уже /otzivi в URL для загрузки всех отзывов
-        if not url.endswith('/otzivi') and all_reviews:
-            # Добавляем параметр для загрузки всех отзывов
-            url = f"{url}/otzivi"
-        
-    return url
-
-
-# Глобальный браузер через lifespan
-@asynccontextmanager
-async def lifespan(app):
-    # Camoufox automatically handles Playwright start/stop
-    # We use persistent_context=True to keep session data in user_data_dir
-    logging.info("Starting Camoufox browser...")
-    # На Linux используем headless=False (возможно, это лучше для обхода защиты)
-    headless_mode = False  # Отключаем headless, чтобы избежать детектирования
-    logging.info(f"Platform: {sys.platform}, headless: {headless_mode}")
+def _int_env(name: str, default: int) -> int:
     try:
-        async with AsyncCamoufox(
-            headless=headless_mode,
-            humanize=True,  # Включаем имитацию человеческого поведения курсора
-            user_data_dir="data",
-            persistent_context=True,
-            args=[
-                '--no-sandbox', 
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage'
-            ]
-            ) as context:
-                app.state.browser_context = context
-                
-                # Добавляем скрипт для скрытия автоматизации
-                anti_detect_script = """
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en']
-                });
-                window.chrome = {
-                    runtime: {}
-                };
-                """
-                
-                await context.add_init_script(anti_detect_script)
-                
-                # --- Warm-up: Открываем главные страницы для "прогрева" сессии ---
-                logging.info("Warming up browser: checking background tabs...")
-                
-                # Проверяем, открыты ли уже эти страницы (например, восстановлены из сессии)
-                pages = context.pages
-                docdoc_open = any("docdoc.ru" in p.url for p in pages)
-                prodoctorov_open = any("prodoctorov.ru" in p.url for p in pages)
-                
-                try:
-                    # Получаем первую пустую страницу (если она есть), чтобы не плодить окна
-                    empty_page = None
-                    for p in pages:
-                        if p.url == "about:blank":
-                            empty_page = p
-                            break
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
-                    if not docdoc_open:
-                        logging.info("Opening SberZdorovie (docdoc.ru)...")
-                        await asyncio.sleep(random.uniform(2, 4))  # Задержка перед открытием
-                        # Используем пустую страницу или создаем новую
-                        if empty_page:
-                            p1 = empty_page
-                            empty_page = None # Использовали
-                        else:
-                            p1 = await context.new_page()
-                        
-                        await p1.goto("https://docdoc.ru", timeout=90000, wait_until="domcontentloaded")
-                        await asyncio.sleep(random.uniform(3, 6))  # Задержка после открытия
-                        # Прокручиваем страницу
-                        await p1.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                        await asyncio.sleep(random.uniform(1, 2))
-                        await p1.evaluate("window.scrollTo(0, 0)")
-                    
-                    if not prodoctorov_open:
-                        logging.info("Opening ProDoctorov...")
-                        await asyncio.sleep(random.uniform(2, 4))  # Задержка перед открытием
-                        # Если осталась пустая страница (вряд ли, но вдруг), используем её
-                        if empty_page:
-                            p2 = empty_page
-                        else:
-                            p2 = await context.new_page()
-                            
-                        await p2.goto("https://prodoctorov.ru", timeout=90000, wait_until="domcontentloaded")
-                        await asyncio.sleep(random.uniform(3, 6))  # Задержка после открытия
-                        # Прокручиваем страницу
-                        await p2.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                        await asyncio.sleep(random.uniform(1, 2))
-                        await p2.evaluate("window.scrollTo(0, 0)")
-                        
-                except Exception as e:
-                    logging.error(f"Warm-up error: {e}")
-                    
-                logging.info("Browser warm-up complete.")
-                
-                yield
-    except Exception as e:
-        logging.error(f"Browser startup error: {e}")
-        raise
 
-# async def get_browser_context(): ... (Removed)
+@asynccontextmanager
+async def lifespan(app: fastapi.FastAPI):
+    app.state.cache = AsyncTTLCache(CACHE_TTL, CACHE_MAX_ENTRIES)
+    app.state.blocked_cache = AsyncTTLCache(BLOCKED_CACHE_TTL, CACHE_MAX_ENTRIES)
+    app.state.semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+    app.state.rate_limiter = FixedWindowRateLimiter(RATE_LIMIT, RATE_WINDOW)
+    try:
+        yield
+    finally:
+        await close_browser()
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-API-Key"])
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    path = request.url.path
+    if path not in {"/", "/favicon.ico", "/health"}:
+        if API_AUTH_ENABLED and not API_KEY:
+            return JSONResponse(status_code=500, content={"error": "server_configuration_error"})
+        supplied = request.headers.get("X-API-Key", "")
+        if API_AUTH_ENABLED and (not supplied or not secrets.compare_digest(supplied, API_KEY)):
+            return JSONResponse(status_code=401, content={"error": "unauthorized"})
+        client = request.client.host if request.client else "unknown"
+        allowed, retry = await request.app.state.rate_limiter.check(f"{client}:{supplied}")
+        if not allowed:
+            return JSONResponse(status_code=429, headers={"Retry-After": str(max(1, int(retry + 0.999)))}, content={"error": "rate_limited"})
+    metrics["requests"] += 1
+    return await call_next(request)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open("index.html", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
+    with open("index.html", encoding="utf-8") as file:
+        return HTMLResponse(file.read())
 
-@app.get('/favicon.ico')
+
+@app.get("/favicon.ico")
 async def favicon():
-    return FileResponse('favicon.ico')
-            
+    return FileResponse("favicon.ico")
 
-@app.get("/api/v1/getReviews")
-async def run_playwright(url: str = None, platform: Platform = None, all_reviews: bool = False):
-    if not url:
-        return {
-            "error": "URL parameter missing",
-            "details": "Please provide URL in query parameters, e.g.: /?url=https://docdoc.ru/doctor/SomeDoctor"
-        }
-    if not platform:
-        return {
-            "error": "Platform missing",
-            "details": "Please provide platform in query parameters: platform=sberzdorovie or platform=prodoctorov"
-        }
-    return await fetch(url, platform, all_reviews)
 
-@app.post("/api/v1/checkSentiment")
-async def sentiment_route(request: Request):
-    """
-    Endpoint for sentiment analysis.
-    Supports two formats:
-    1. Single review: {"review": "..."} -> {"sentiment": "..."}
-    2. Batch reviews: {"reviews": [{"id": "1", "text": "..."}, ...]} -> {"results": [{"id": "1", "sentiment": "..."}, ...]}
-    """
-    try:
-        data = await request.json()
-    except Exception as e:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Invalid JSON in request body", "details": str(e)}
-        )
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-    if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
-        return {"error": "AI_API_KEY, AI_API_URL, AI_MODEL not set in .env file"}
 
-    # 1. Batch processing
-    if "reviews" in data and isinstance(data["reviews"], list):
-        reviews_data = data["reviews"]
-        if not reviews_data:
-            return {"results": []}
+@app.get("/metrics")
+async def get_metrics():
+    return {**metrics, **browser_stats}
 
-        # Run one request to API
-        return await check_batch_reviews_sentiment(reviews_data)
 
-    # 2. Single review processing (Legacy)
-    review = data.get("review")
-    if not review:
-        return {"error": "Review text (review) or list of reviews (reviews) missing"}
-    
-    try:
-        sentiment = await check_review_sentiment(review)
-        return {"sentiment": sentiment}
-    except Exception as e:
-        logging.error(f"Sentiment Analysis Error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Sentiment analysis error",
-                "details": str(e)
-            }
-        )
+def modify_url_for_platform(url: str, platform: Platform, all_reviews: bool = False) -> str:
+    normalized = security.validate_url_shape(url, platform)
+    if platform == Platform.PRODOCTOROV and all_reviews and not normalized.rstrip("/").endswith("/otzivi"):
+        return normalized.rstrip("/") + "/otzivi"
+    return normalized
 
+
+def cache_key(url: str, platform: Platform, all_reviews: bool = False) -> str:
+    return f"{platform.value}:{url}:{'all' if all_reviews else 'page'}"
 
 
 async def fetch(url: str, platform: Platform, all_reviews: bool = False):
-    # Модифицируем URL в зависимости от платформы
-    url = modify_url_for_platform(url, platform, all_reviews)
-    
-    # Используем глобальный контекст
-    browser_context = app.state.browser_context
-    
-    # Всегда создаем новую вкладку для новой задачи
-    # Это гарантирует, что мы не помешаем фоновым вкладкам (docdoc/prodoctorov)
-    page = await browser_context.new_page()
-
+    started = time.perf_counter()
+    target = modify_url_for_platform(url, platform, all_reviews)
+    key = cache_key(target, platform, all_reviews)
+    cached = await app.state.cache.get(key)
+    if cached is not None:
+        metrics["cache_hits"] += 1
+        return cached
+    blocked = await app.state.blocked_cache.get(key)
+    if blocked is not None:
+        metrics["cache_hits"] += 1
+        return JSONResponse(status_code=blocked["status_code"], content=blocked["content"])
     try:
-        # Добавляем случайные задержки для имитации человеческого поведения
-        await asyncio.sleep(random.uniform(1, 3))
-        
-        # Увеличиваем таймаут до 90 секунд и используем более мягкие условия ожидания
-        await page.goto(url, timeout=90000, wait_until='domcontentloaded')
-        
-        # Случайная задержка после загрузки
-        await asyncio.sleep(random.uniform(3, 7))
-        
-        # Прокручиваем страницу для имитации человеческого скролла
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3)")
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight * 2 / 3)")
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-        await page.evaluate("window.scrollTo(0, 0)")
-        await asyncio.sleep(random.uniform(1, 3))
-        
-        title = await page.title()
-        reviews = await parse_reviews(platform, page, all_reviews)
-        logging.info(f"Parsed {len(reviews)} reviews from {url}")
-        
-        # --- Сохраняем скриншот ---
-        screenshot_path = None
-        if SAVE_SCREENSHOT:
-            os.makedirs("screenshots", exist_ok=True)
-            url_hash = hashlib.md5(url.encode()).hexdigest()
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-            screenshot_path = f"screenshots/{timestamp}_{url_hash}.png"
-            try:
-                await page.screenshot(path=screenshot_path, full_page=True)
-            except Exception as e:
-                logging.warning(f"Full page screenshot failed (likely too large): {e}. Taking viewport screenshot instead.")
-                await page.screenshot(path=screenshot_path, full_page=False)
-        
-        # Всегда закрываем вкладку после работы
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-        await page.close()
-                
-        result = {
-            "title": title,
-            "reviews": [review.model_dump() for review in reviews]
-        }
-        if screenshot_path:
-            result["screenshot"] = screenshot_path
-        return result
-    except Exception as e:
-        # Если была ошибка, закрываем вкладку
-        try:
-            await page.close()
-        except Exception:
-            pass
-        return {
-            "error": "Page load error",
-            "details": str(e)
-        }
+        async with app.state.semaphore:
+            domains = SOURCE_CONFIGS[platform].domains
+            async with HTTPClient(domains) as client:
+                collector = SberZdorovieCollector(client) if platform == Platform.SBERZDOROVIE else ProdoctorovCollector(client)
+                result = await collector.collect(target, all_reviews)
+        if MAX_RESULT_REVIEWS >= 0:
+            result.reviews = result.reviews[:MAX_RESULT_REVIEWS]
+        public = result.public()
+        await app.state.cache.set(key, public)
+        logger.info("collection elapsed_ms=%.1f", (time.perf_counter() - started) * 1000)
+        return public
+    except CollectorError as error:
+        metrics["errors"] += 1
+        content = {"error": error.code, "details": str(error)}
+        if isinstance(error, SourceBlockedError):
+            await app.state.blocked_cache.set(key, {"status_code": error.status_code, "content": content}, BLOCKED_CACHE_TTL)
+        return JSONResponse(status_code=error.status_code, content=content)
+    except Exception:
+        metrics["errors"] += 1
+        logger.exception("collection failed")
+        return JSONResponse(status_code=502, content={"error": "collection_error"})
 
 
-async def parse_reviews(platform: Platform, page, all_reviews: bool = False) -> List[Review]:
-    reviews: List[Review] = []
-    
-    if platform == Platform.SBERZDOROVIE:
-        # Ждем появления скрипта с данными (обходим возможные спиннеры/проверки на бота)
-        try:
-            # Script тег не видимый, поэтому ждем state='attached'
-            await page.wait_for_selector("#__NEXT_DATA__", state="attached", timeout=20000)
-        except Exception:
-            return []
-
-        # Получаем данные из скрипта
-        next_data = await page.evaluate('''() => {
-            const script = document.getElementById('__NEXT_DATA__');
-            return script ? script.textContent : null;
-        }''')
-
-        if not next_data:
-            return []
-        try:
-            data = json.loads(next_data)
-            if 'props' in data and 'pageProps' in data['props']:
-                raw_reviews = data['props']['pageProps']['preloadedState']['doctorPage']['doctor']['reviewsForSeo']
-                for review in raw_reviews:
-                    reviews.append(Review(
-                        id=str(review.get('id', '')),
-                        name=review.get('name', ''),
-                        date=review.get('isoDate', ''),
-                        date_beauty=review.get('date', ''),
-                        message=review.get('text', ''),
-                        rating=str(int(review.get('rating', {}).get('value', 0) * 10)),
-                        source=platform
-                    ))
-        except json.JSONDecodeError:
-            reviews = []
-    
-    elif platform == Platform.PRODOCTOROV:
-        # Ждем загрузки основного контента
-        try:
-            await page.wait_for_selector(".b-review-card", timeout=15000)
-        except Exception:
-            return []
-        # Получаем все отзывы одним запросом
-        reviews_data = await page.evaluate(f'''() => {{
-            const reviews = [];
-            const cards = Array.from(document.querySelectorAll('.b-review-card'));
-            const cardsToProcess = {'cards.slice(0, 20)' if not all_reviews else 'cards'};
-            
-            cardsToProcess.forEach(card => {{
-                const reviewBody = card.querySelector('div[itemprop="reviewBody"]');
-                const authorLink = card.querySelector('.b-review-card__author-link');
-                const dateElem = card.querySelector('div[itemprop="datePublished"]');
-                const messageElem = card.querySelector('.b-review-card__comment');
-                const ratingElem = card.querySelector('meta[itemprop="ratingValue"]');
-                
-                if (messageElem && messageElem.textContent.trim()) {{
-                    reviews.push({{
-                        id: reviewBody ? reviewBody.getAttribute('data') : '',
-                        name: authorLink ? authorLink.textContent.replace(/\\s+/g, ' ').trim() : '',
-                        date: dateElem ? dateElem.getAttribute('content') : '',
-                        date_beauty: dateElem ? dateElem.textContent.replace(/\\s+/g, ' ').trim() : '',
-                        message: messageElem.textContent.replace(/\\s+/g, ' ').trim(),
-                        rating: ratingElem ? ratingElem.getAttribute('content') : '0'
-                    }});
-                }}
-            }});
-            return reviews;
-        }}''')
-        
-        # Преобразуем полученные данные в объекты Review
-        for review_data in reviews_data:
-            reviews.append(Review(
-                id=review_data['id'],
-                name=review_data['name'],
-                date=review_data['date'],
-                date_beauty=review_data['date_beauty'],
-                message=review_data['message'],
-                rating=review_data['rating'],
-                source=platform
-            ))
-    
-    # for review in reviews:
-    #     if AI_API_KEY:
-    #         review.sentiment = await check_review_sentiment(review.message)
-    
-    return reviews
+@app.get("/api/v1/getReviews")
+async def get_reviews(url: str | None = None, platform: Platform | None = None, all_reviews: bool = False):
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "invalid_url", "details": "URL parameter missing"})
+    if not platform:
+        return JSONResponse(status_code=400, content={"error": "unsupported_platform", "details": "Platform parameter missing"})
+    try:
+        return await fetch(url, platform, all_reviews)
+    except InvalidURLError as error:
+        return JSONResponse(status_code=400, content={"error": error.code, "details": str(error)})
 
 
-async def manual_captcha_mode():
-    """Режим ручного прохождения капчи: запускает браузер и ждет, пока пользователь закроет его."""
-    print("=== РЕЖИМ РУЧНОГО ПРОХОЖДЕНИЯ КАПЧИ ===")
-    print("Браузер откроется, пройдите капчу на docdoc.ru и prodoctorov.ru,")
-    print("закройте браузер, когда закончите.")
-    print("Сессия будет сохранена в папке 'data'.")
-    print("-" * 50)
-    
-    headless_mode = False
-    async with AsyncCamoufox(
-        headless=headless_mode,
-        humanize=True,
-        user_data_dir="data",
-        persistent_context=True,
-        args=[
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
-        ]
-    ) as context:
-        # Добавляем антидетект-скрипт
-        anti_detect_script = """
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5]
-        });
-        Object.defineProperty(navigator, 'languages', {
-            get: () => ['en-US', 'en']
-        });
-        window.chrome = {
-            runtime: {}
-        };
-        """
-        await context.add_init_script(anti_detect_script)
-        
-        # Открываем страницы для прохождения капчи
-        await asyncio.sleep(2)
-        
-        page1 = await context.new_page()
-        await page1.goto("https://docdoc.ru", timeout=120000)
-        print(">>> Открыта страница docdoc.ru")
-        
-        await asyncio.sleep(2)
-        
-        page2 = await context.new_page()
-        await page2.goto("https://prodoctorov.ru", timeout=120000)
-        print(">>> Открыта страница prodoctorov.ru")
-        
-        print("\nПройдите капчи на открытых страницах...")
-        print("Нажмите Ctrl+C в этом окне, когда закончите.")
-        
-        # Бесконечный цикл, пока пользователь не остановит
-        try:
-            while True:
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            print("\nСохранение сессии...")
+@app.post("/api/v1/checkSentiment")
+async def sentiment_route(request: Request):
+    if request.headers.get("content-length") and int(request.headers["content-length"]) > SENTIMENT_MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"error": "request_too_large"})
+    try:
+        body = await request.body()
+        if len(body) > SENTIMENT_MAX_BODY_BYTES:
+            return JSONResponse(status_code=413, content={"error": "request_too_large"})
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid_json"})
+    if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
+        return {"error": "sentiment_unavailable"}
+    if isinstance(data.get("reviews"), list):
+        return await check_batch_reviews_sentiment(data["reviews"])
+    if not data.get("review"):
+        return {"error": "review_missing"}
+    try:
+        return {"sentiment": await check_review_sentiment(data["review"])}
+    except Exception:
+        metrics["errors"] += 1
+        return JSONResponse(status_code=500, content={"error": "sentiment_error"})
 
 
 if __name__ == "__main__":
-    # Проверяем аргументы командной строки
-    if len(sys.argv) > 1 and sys.argv[1] == "--manual":
-        # Режим ручного прохождения капчи
-        print("=== РЕЖИМ РУЧНОГО ПРОХОЖДЕНИЯ КАПЧИ ===")
-        print("Если используете X11-forwarding, браузер откроется на вашем локальном компьютере.")
-        print("-" * 50)
-        
-        # В ручном режиме не используем pyvirtualdisplay, чтобы работал X11-forwarding
-        asyncio.run(manual_captcha_mode())
-    else:
-        # Обычный режим работы сервера
-        print("Запуск сервера... Для ручного прохождения капчи используйте: python main.py --manual")
-        if sys.platform.startswith('linux'):
-            # На Linux запускаем виртуальный дисплей
-            with Display(visible=0, size=(1024, 768)) as disp:
-                uvicorn.run(
-                    "main:app",
-                    host="0.0.0.0",
-                    reload=False,
-                    port=9000
-                )
-        else:
-            # На Windows и других платформах запускаем без виртуального дисплея
-            uvicorn.run(
-                "main:app",
-                host="0.0.0.0",
-                reload=False,
-                port=9000
-            )
+    uvicorn.run("main:app", host="0.0.0.0", reload=False, port=9000)

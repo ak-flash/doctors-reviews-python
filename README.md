@@ -22,20 +22,24 @@ https://doc-reviews.ak-vps.ru/docs
     https://prodoctorov.ru/moskva/vrach/ivanov_ivan/
 
 Используемые модули:
-    camoufox
-    playwright
+    curl_cffi
     fastapi
-    
-Настройки анализ сентиментальности отзыва (дополнительно):
 
-    AI_API_URL: https://openrouter.ai/api/v1
-    AI_MODEL: mistralai/mistral-small-24b-instruct-2501:free
-    AI_API_KEY: sk-o...
+Примечание: ранее для резервного браузерного режима использовался Camoufox. Он действительно работал, но для текущего сбора данных через HTML и API SberЗдоровья больше не нужен и удалён из рабочего окружения.
+    
+Настройки анализа сентиментальности отзыва (дополнительно):
+
+    AI_API_URL=https://openrouter.ai/api/v1
+    AI_MODEL=provider/model-name
+    AI_API_KEY=your-provider-api-key
+
+Используется OpenAI-compatible API. Можно указать любой провайдер с endpoint `chat/completions`: OpenRouter, OpenAI, Groq, Together, Ollama и другие.
+`AI_API_URL` должен быть base URL API, обычно с `/v1`; если указать полный URL `/chat/completions`, приложение автоматически удалит этот суффикс.
 
 
 ## Установка
 
-    sudo apt-get install xvfb python3 python3-pip python3-venv 
+    sudo apt-get install python3 python3-pip python3-venv
 
 ## Create a virtual environment 
     python -m venv venv
@@ -55,27 +59,35 @@ https://doc-reviews.ak-vps.ru/docs
 OR
 
 #### Manual install
-    pip install camoufox playwright fastapi[standard] uvicorn pyvirtualdisplay
-
-
-## Install browser
-    # Camoufox автоматически загрузит браузер при первом запуске, но можно сделать это вручную:
-    python -m camoufox fetch
+    pip install curl_cffi fastapi[standard] uvicorn
 
 ## Запуск скрипта
 
 ### 1. Обычный запуск (на всех платформах)
-Скрипт автоматически определяет платформу и использует виртуальный дисплей на Linux:
+Скрипт запускает HTTP-сборщики без браузера:
     python main.py
 
-### 2. Ручной режим для прохождения капчи
-Используйте этот режим, если нужно пройти капчу вручную (сохраняет сессию в `data/`):
-    python main.py --manual
+## Обновление Docker-контейнера
 
-На Linux через SSH можно использовать **X11-forwarding**, чтобы увидеть браузер локально:
-    ssh -X user@your-server-ip
-    # затем на сервере
-    python main.py --manual
+После изменения кода или зависимостей выполните в корне проекта:
+
+```powershell
+docker compose up -d --build --force-recreate --wait
+```
+
+Проверить состояние контейнера:
+
+```powershell
+docker compose ps
+docker compose logs -f web
+```
+
+Если контейнер не обновился, пересоздайте его полностью:
+
+```powershell
+docker compose down
+docker compose up -d --build --force-recreate --wait
+```
 
 ### 3. Если ошибки при запуске
 sudo apt update

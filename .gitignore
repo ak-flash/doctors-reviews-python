@@ -30,7 +30,9 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
-# Кэш браузера playwright/patchright
+# Локальные данные и кэш
 data/
 
 screenshots/
+data/browser/
+data/test-browser/
