@@ -20,8 +20,9 @@
             <a href="https://github.com/ak-flash/doctors-reviews-python">Исходный код</a>
             <div style="display: flex; gap: 10px; margin-left: 10px;">
                 Используемые модули:
-                <a href="https://curl-cffi.readthedocs.io/" target="_blank">curl_cffi</a>
                 <a href="https://fastapi.tiangolo.com" target="_blank">fastapi</a>
+                <a href="https://www.python-httpx.org" target="_blank">httpx</a>
+                <a href="https://camoufox.com" target="_blank">camoufox</a>
             </div>
         </div>
         
@@ -29,7 +30,7 @@
             <b>Доступные роуты:</b>
             <ul>
                 <li><code>GET /api/v1/getReviews?url=...&platform=...&all_reviews=...</code> — получить отзывы</li>
-                <li><code>POST /api/v1/checkSentiment</code> — анализ сентиментальности отзыва (тональности: положительный, отрицательный) (JSON: {'{"review": "текст"}'})</li>
+                <li><code>POST /api/v1/checkSentiment</code> — анализ сентиментальности отзыва (тональности: положительный, отрицательный) (JSON: <code>{"review": "текст"}</code>)</li>
             </ul>
         </div>
         
