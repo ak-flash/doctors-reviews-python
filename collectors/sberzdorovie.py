@@ -5,7 +5,7 @@ from urllib.parse import urlencode, urlparse
 
 from lxml import html
 
-from .base import CollectorResult, EmptyResponseError, Platform, Review, SourceBlockedError, normalize_review
+from .base import CollectorResult, EmptyResponseError, Platform, Review, SourceBlockedError, SourceHTTPError, normalize_review
 from .browser import collect_with_browser
 from .http_client import HTTPClient
 
@@ -37,6 +37,11 @@ def parse_sber_page(content: str) -> tuple[CollectorResult, int | str | None, in
         raise EmptyResponseError("SberZdorovie __NEXT_DATA__ is missing")
     try:
         data = json.loads(scripts[0])
+    except ValueError as exc:
+        raise EmptyResponseError("SberZdorovie review data is missing") from exc
+    if isinstance(data, dict) and data.get("page") in {"/404", "/_error"}:
+        raise SourceHTTPError("SberZdorovie doctor page not found", status_code=404)
+    try:
         state = data["props"]["pageProps"]["preloadedState"]
         doctor = state["doctorPage"]["doctor"]
         doctor_reviews = state.get("doctorReviews", {})

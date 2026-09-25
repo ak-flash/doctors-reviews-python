@@ -168,6 +168,10 @@ class CamoufoxClient:
                         await page.wait_for_selector(selector, state="attached", timeout=min(self.timeout * 1000, 15000))
                     except Exception:
                         logger.warning("Browser selector not found platform=%s selector=%s; parsing current page", platform.value, selector)
+                    if platform == Platform.SBERZDOROVIE:
+                        # Next.js can attach __NEXT_DATA__ before it fills <title>.
+                        with suppress(Exception):
+                            await page.wait_for_function("document.title.length > 0", timeout=3000)
                     validate_url_shape(page.url, platform)
                     content = await page.content()
                     if is_blocked_content(status, content):
