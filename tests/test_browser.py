@@ -31,7 +31,6 @@ class FakePage:
         self.content = AsyncMock(return_value=content)
         self.close = AsyncMock()
         self.wait_for_selector = AsyncMock()
-        self.wait_for_function = AsyncMock()
         self.evaluate = AsyncMock()
         self.guard = None
 
@@ -93,6 +92,7 @@ async def test_one_lazy_context_for_both_sources(make_browser):
         assert second.reviews[0].source == "prodoctorov"
         factory.assert_awaited_once()
         assert factory.call_args.kwargs["persistent_context"] is True
+        assert factory.call_args.kwargs["block_webgl"] is True
         assert context.new_page.await_count == 2
         assert sber.wait_for_selector.call_args.kwargs["state"] == "attached"
         sber.close.assert_awaited_once()
@@ -216,12 +216,17 @@ async def test_browser_http_404_is_not_a_captcha(make_browser):
 
 
 @pytest.mark.asyncio
-async def test_selector_timeout_returns_controlled_source_error(make_browser):
-    page = FakePage('<script src="https://servicepipe.tech/static/checkjs/x.js"></script>')
+@pytest.mark.parametrize("content", [
+    '<script src="https://servicepipe.tech/static/checkjs/x.js"></script>',
+    '<p>Мы хотим убедиться, что имеем дело именно с вами, а не с ботом.</p><script src="./sp_rotated_captcha/js/bundle.js"></script>',
+])
+async def test_selector_timeout_returns_controlled_source_error(make_browser, content):
+    page = FakePage(content)
     page.wait_for_selector.side_effect = TimeoutError("verification not complete")
     client, _, _, _ = make_browser(page)
-    with pytest.raises(SourceBlockedError):
+    with pytest.raises(SourceBlockedError) as error:
         await client.collect(SBER_URL, Platform.SBERZDOROVIE)
+    assert error.value.status_code == 503
     page.close.assert_awaited_once()
     await client.close()
 

@@ -86,6 +86,10 @@ class CamoufoxClient:
                 humanize=True,
                 locale="ru-RU",
                 service_workers="block",
+                # Servers only have software WebGL (Mesa llvmpipe), which contradicts the spoofed GPU:
+                # in Docker, ServicePipe answered it with an image captcha, while the same fingerprint without WebGL passed.
+                block_webgl=True,
+                i_know_what_im_doing=True,
                 proxy={"server": self.proxy} if self.proxy else None,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             )
@@ -168,14 +172,10 @@ class CamoufoxClient:
                         await page.wait_for_selector(selector, state="attached", timeout=min(self.timeout * 1000, 15000))
                     except Exception:
                         logger.warning("Browser selector not found platform=%s selector=%s; parsing current page", platform.value, selector)
-                    if platform == Platform.SBERZDOROVIE:
-                        # Next.js can attach __NEXT_DATA__ before it fills <title>.
-                        with suppress(Exception):
-                            await page.wait_for_function("document.title.length > 0", timeout=3000)
                     validate_url_shape(page.url, platform)
                     content = await page.content()
                     if is_blocked_content(status, content):
-                        raise SourceBlockedError("Browser returned a verification or blocking page", status_code=status)
+                        raise SourceBlockedError("Browser returned a verification or blocking page")
                     if len(content.encode("utf-8")) > self.max_response_bytes:
                         raise ResponseTooLargeError("Browser response exceeds configured limit")
                     if failures:

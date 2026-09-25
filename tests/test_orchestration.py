@@ -1,9 +1,8 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from curl_cffi.requests.exceptions import Timeout
 
 import main
 from app.cache import AsyncTTLCache
@@ -35,16 +34,16 @@ def reset_main(monkeypatch):
 
 
 @pytest.fixture
-def install_http(monkeypatch, curl_session_factory):
+def install_http(monkeypatch):
     def install(handler):
+        handler = Mock(side_effect=handler)
         transport = httpx.MockTransport(handler)
-        session = curl_session_factory(handler)
 
         def factory(domains):
-            return HTTPClient(domains, retries=0, client=httpx.AsyncClient(transport=transport), curl_session=session, url_validator=noop_validator)
+            return HTTPClient(domains, retries=0, client=httpx.AsyncClient(transport=transport), url_validator=noop_validator)
 
         monkeypatch.setattr(main, "HTTPClient", factory)
-        return session
+        return handler
 
     return install
 
@@ -62,7 +61,7 @@ async def test_failed_browser_fallback_returns_source_error(install_http, browse
 @pytest.mark.asyncio
 async def test_http_timeout_returns_collection_error(install_http):
     def handler(request):
-        raise Timeout("timeout")
+        raise httpx.ReadTimeout("timeout")
 
     install_http(handler)
     result = await main.fetch("https://docdoc.ru/doctor/a", Platform.SBERZDOROVIE)
@@ -110,14 +109,14 @@ async def test_normal_pages_use_http_collectors(install_http):
 @pytest.mark.asyncio
 async def test_blocked_result_uses_short_cache(install_http, browser_fallback):
     main.app.state.blocked_cache = AsyncTTLCache(60, 10)
-    session = install_http(lambda request: httpx.Response(403, text="blocked"))
+    handler = install_http(lambda request: httpx.Response(403, text="blocked"))
 
     first = await main.fetch("https://docdoc.ru/doctor/a", Platform.SBERZDOROVIE)
     second = await main.fetch("https://docdoc.ru/doctor/a", Platform.SBERZDOROVIE)
 
     assert first.status_code == 503
     assert second.status_code == 503
-    assert session.get.call_count == 1
+    assert handler.call_count == 1
     browser_fallback.assert_awaited_once()
 
 
@@ -150,7 +149,7 @@ async def test_api_captcha_with_http_200_returns_controlled_error(install_http, 
 @pytest.mark.asyncio
 async def test_api_returns_docdoc_reviews(install_http):
     payload = '{"props":{"pageProps":{"preloadedState":{"doctorPage":{"doctor":{"id":1}},"doctorReviews":{"reviewsForSeo":[{"id":1,"text":"Good"}],"totalReviewCount":1}}}}}'
-    session = install_http(lambda request: httpx.Response(200, text=f'<title>Doctor</title><script id="__NEXT_DATA__">{payload}</script>'))
+    handler = install_http(lambda request: httpx.Response(200, text=f'<title>Doctor</title><script id="__NEXT_DATA__">{payload}</script>'))
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/getReviews", params={"url": "https://docdoc.ru/doctor/a", "platform": "sberzdorovie", "all_reviews": "true"})
@@ -158,7 +157,7 @@ async def test_api_returns_docdoc_reviews(install_http):
     assert response.status_code == 200
     assert response.json()["title"] == "Doctor"
     assert response.json()["reviews"][0]["message"] == "Good"
-    session.get.assert_called_once()
+    handler.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -169,7 +168,7 @@ async def test_api_returns_docdoc_reviews(install_http):
 async def test_api_uses_and_caches_browser_fallback(install_http, browser_fallback, platform, url):
     browser_fallback.side_effect = None
     browser_fallback.return_value = CollectorResult(title="Врач", reviews=[Review(message="Хороший врач", source=platform.value)])
-    session = install_http(lambda request: httpx.Response(403, text="Forbidden"))
+    handler = install_http(lambda request: httpx.Response(403, text="Forbidden"))
     transport = httpx.ASGITransport(app=main.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         first = await client.get("/api/v1/getReviews", params={"url": url, "platform": platform.value})
@@ -179,7 +178,7 @@ async def test_api_uses_and_caches_browser_fallback(install_http, browser_fallba
     assert first.json() == second.json()
     assert first.json()["reviews"][0]["message"] == "Хороший врач"
     browser_fallback.assert_awaited_once_with(url, platform, False)
-    session.get.assert_called_once()
+    handler.assert_called_once()
 
 
 @pytest.mark.asyncio

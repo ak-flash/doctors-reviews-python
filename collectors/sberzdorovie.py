@@ -42,7 +42,8 @@ def parse_sber_page(content: str) -> tuple[CollectorResult, int | str | None, in
     if isinstance(data, dict) and data.get("page") in {"/404", "/_error"}:
         raise SourceHTTPError("SberZdorovie doctor page not found", status_code=404)
     try:
-        state = data["props"]["pageProps"]["preloadedState"]
+        page_props = data["props"]["pageProps"]
+        state = page_props["preloadedState"]
         doctor = state["doctorPage"]["doctor"]
         doctor_reviews = state.get("doctorReviews", {})
         raw_reviews = doctor_reviews.get("reviewsForSeo") or doctor_reviews.get("reviews")
@@ -55,8 +56,16 @@ def parse_sber_page(content: str) -> tuple[CollectorResult, int | str | None, in
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise EmptyResponseError("SberZdorovie review data is missing") from exc
     reviews = [normalize_review(item, Platform.SBERZDOROVIE) for item in raw_reviews if isinstance(item, dict)]
-    title = " ".join("".join(document.xpath("//title/text()")).split())
+    title = " ".join("".join(document.xpath("//title/text()")).split()) or _seo_title(page_props)
     return CollectorResult(title=title, reviews=reviews), doctor_id, total_reviews
+
+
+def _seo_title(page_props: dict) -> str:
+    # Next.js may fill <title> only after hydration; the server-rendered SEO data already contains it.
+    seo = page_props.get("seo")
+    head = seo.get("head") if isinstance(seo, dict) else None
+    title = head.get("title") if isinstance(head, dict) else None
+    return " ".join(title.split()) if isinstance(title, str) else ""
 
 
 async def _load_more_reviews(http: HTTPClient, doctor_id: int | str, offset: int, source_url: str) -> list[Review]:

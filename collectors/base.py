@@ -167,4 +167,8 @@ def is_blocked_content(status_code: int, content: bytes | str) -> bool:
     lowered = " ".join(lowered.split())
     if any(marker in lowered for marker in markers):
         return True
-    return not lowered and any(challenge_script in source.lower() for source in document.xpath("//script/@src"))
+    scripts = [source.lower() for source in document.xpath("//script/@src")]
+    # The ServicePipe image captcha has no generic marker in its visible text; only its script bundle identifies it.
+    if any("sp_rotated_captcha/" in source for source in scripts):
+        return True
+    return not lowered and any(challenge_script in source for source in scripts)

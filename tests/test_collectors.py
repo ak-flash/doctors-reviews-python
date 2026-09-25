@@ -1,4 +1,5 @@
 import json
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -26,10 +27,10 @@ def test_normalize_url_whitelist():
 
 
 @pytest.mark.asyncio
-async def test_sber_parser(curl_session_factory):
+async def test_sber_parser(mock_client):
     payload = {"props": {"pageProps": {"preloadedState": {"doctorPage": {"doctor": {"id": 1, "reviewsForSeo": [{"id": 1, "name": " Ann ", "isoDate": "2025-01-02T12:00:00Z", "date": "2 января", "text": " Good ", "rating": {"value": 10, "label": "Отлично"}}]}}}}}}
-    session = curl_session_factory(lambda request: httpx.Response(200, text=f'<title>Doctor</title><script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'))
-    async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=noop_validator) as client:
+    transport = mock_client(lambda request: httpx.Response(200, text=f'<title>Doctor</title><script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'))
+    async with HTTPClient(("docdoc.ru",), client=transport, url_validator=noop_validator) as client:
         result = await SberZdorovieCollector(client).collect("https://docdoc.ru/doctor/a")
     assert result.title == "Doctor"
     assert result.reviews[0].message == "Good"
@@ -39,11 +40,11 @@ async def test_sber_parser(curl_session_factory):
 
 
 @pytest.mark.asyncio
-async def test_prodoctorov_parser(curl_session_factory, monkeypatch):
+async def test_prodoctorov_parser(mock_client, monkeypatch):
     content = '<title>Отзывы врача</title><div class="b-review-card"><div itemprop="reviewBody" data="r1"></div><a class="b-review-card__author-link">Анна</a><div itemprop="datePublished" content="2025-01-02">2 января</div><div class="b-review-card__comment">Внимательный врач</div><meta itemprop="ratingValue" content="5"></div>'
-    session = curl_session_factory(lambda request: httpx.Response(200, text=content))
+    transport = mock_client(lambda request: httpx.Response(200, text=content))
     monkeypatch.setattr("collectors.prodoctorov.collect_with_browser", pytest.fail)
-    async with HTTPClient(("prodoctorov.ru",), curl_session=session, url_validator=noop_validator) as client:
+    async with HTTPClient(("prodoctorov.ru",), client=transport, url_validator=noop_validator) as client:
         result = await ProdoctorovCollector(client).collect("https://prodoctorov.ru/doctor/a")
     assert result.title == "Отзывы врача"
     assert result.reviews[0].id == "r1"
@@ -53,8 +54,8 @@ async def test_prodoctorov_parser(curl_session_factory, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_prodoctorov_browser_fallback(monkeypatch, curl_session_factory):
-    session = curl_session_factory(lambda request: httpx.Response(200, text='<script src="https://servicepipe.tech/static/checkjs/x.js"></script>'))
+async def test_prodoctorov_browser_fallback(monkeypatch, mock_client):
+    transport = mock_client(lambda request: httpx.Response(200, text='<script src="https://servicepipe.tech/static/checkjs/x.js"></script>'))
     expected = CollectorResult(title="Doctor")
     called = []
 
@@ -63,7 +64,7 @@ async def test_prodoctorov_browser_fallback(monkeypatch, curl_session_factory):
         return expected
 
     monkeypatch.setattr("collectors.prodoctorov.collect_with_browser", fallback)
-    async with HTTPClient(("prodoctorov.ru",), curl_session=session, url_validator=noop_validator) as client:
+    async with HTTPClient(("prodoctorov.ru",), client=transport, url_validator=noop_validator) as client:
         result = await ProdoctorovCollector(client).collect("https://prodoctorov.ru/doctor/a", True)
 
     assert result == expected
@@ -71,16 +72,16 @@ async def test_prodoctorov_browser_fallback(monkeypatch, curl_session_factory):
 
 
 @pytest.mark.asyncio
-async def test_block_detection(curl_session_factory):
-    session = curl_session_factory(lambda request: httpx.Response(403, text="captcha"))
-    async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=noop_validator) as client:
+async def test_block_detection(mock_client):
+    transport = mock_client(lambda request: httpx.Response(403, text="captcha"))
+    async with HTTPClient(("docdoc.ru",), client=transport, url_validator=noop_validator) as client:
         with pytest.raises(SourceBlockedError):
             await client.get("https://docdoc.ru/doctor/a")
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["reviewsForSeo", "reviews"])
-async def test_sber_current_next_data_ignores_captcha_configuration(curl_session_factory, field):
+async def test_sber_current_next_data_ignores_captcha_configuration(mock_client, field):
     state = {
         "doctorPage": {"doctor": {"id": 1}},
         "doctorReviews": {field: [{"id": 1, "name": "Анна", "text": "Внимательный врач"}], "totalReviewCount": 1},
@@ -88,9 +89,9 @@ async def test_sber_current_next_data_ignores_captcha_configuration(curl_session
     }
     payload = {"props": {"pageProps": {"preloadedState": state}}}
     content = f'<title>Отзывы врача</title><script src="/recaptcha.js"></script><script id="__NEXT_DATA__">{json.dumps(payload, ensure_ascii=False)}</script>'
-    session = curl_session_factory(lambda request: httpx.Response(200, text=content))
+    transport = mock_client(lambda request: httpx.Response(200, text=content))
 
-    async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=noop_validator) as client:
+    async with HTTPClient(("docdoc.ru",), client=transport, url_validator=noop_validator) as client:
         result = await SberZdorovieCollector(client).collect("https://docdoc.ru/doctor/a")
 
     assert result.title == "Отзывы врача"
@@ -100,7 +101,7 @@ async def test_sber_current_next_data_ignores_captcha_configuration(curl_session
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("all_reviews", [False, True])
-async def test_more_reviews_uses_shared_session_and_validates_url(curl_session_factory, all_reviews):
+async def test_more_reviews_uses_shared_session_and_validates_url(mock_client, all_reviews):
     source_url = "https://ekb.docdoc.ru/doctor/a"
     state = {
         "doctorPage": {"doctor": {"id": 42}},
@@ -112,7 +113,7 @@ async def test_more_reviews_uses_shared_session_and_validates_url(curl_session_f
     async def validator(url):
         validated.append(url)
 
-    def handler(request):
+    def handle(request):
         assert str(request.url) in validated
         if request.url.path == "/doctor/a":
             return httpx.Response(200, text=f'<script id="__NEXT_DATA__">{json.dumps(payload)}</script>', headers={"Set-Cookie": "session=shared; Domain=.docdoc.ru; Path=/"})
@@ -125,13 +126,12 @@ async def test_more_reviews_uses_shared_session_and_validates_url(curl_session_f
         assert request.headers["Sec-Fetch-Mode"] == "cors"
         return httpx.Response(200, json={"reviews": [{"id": 2, "text": "Second"}]})
 
-    session = curl_session_factory(handler)
-    async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=validator) as client:
+    handler = Mock(side_effect=handle)
+    async with HTTPClient(("docdoc.ru",), client=mock_client(handler), url_validator=validator) as client:
         result = await SberZdorovieCollector(client).collect(source_url, all_reviews=all_reviews)
 
     assert [review.message for review in result.reviews] == (["First", "Second"] if all_reviews else ["First"])
-    assert session.get.call_count == len(validated) == (2 if all_reviews else 1)
-    assert all(call.kwargs["impersonate"] == "chrome" for call in session.get.call_args_list)
+    assert handler.call_count == len(validated) == (2 if all_reviews else 1)
 
 
 @pytest.mark.asyncio
@@ -140,7 +140,7 @@ async def test_more_reviews_uses_shared_session_and_validates_url(curl_session_f
     (httpx.Response(200, text="not JSON"), EmptyResponseError),
     (httpx.Response(200, json={"reviews": None}), EmptyResponseError),
 ])
-async def test_more_reviews_errors_are_not_silently_ignored(curl_session_factory, response, error):
+async def test_more_reviews_errors_are_not_silently_ignored(mock_client, response, error):
     state = {
         "doctorPage": {"doctor": {"id": 42}},
         "doctorReviews": {"reviewsForSeo": [{"text": "First"}], "totalReviewCount": 2},
@@ -152,8 +152,8 @@ async def test_more_reviews_errors_are_not_silently_ignored(curl_session_factory
             return httpx.Response(200, text=f'<script id="__NEXT_DATA__">{json.dumps(payload)}</script>')
         return response
 
-    session = curl_session_factory(handler)
-    async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=noop_validator) as client:
+    transport = mock_client(handler)
+    async with HTTPClient(("docdoc.ru",), client=transport, url_validator=noop_validator) as client:
         with pytest.raises(error):
             await SberZdorovieCollector(client).collect("https://docdoc.ru/doctor/a", all_reviews=True)
 
@@ -166,3 +166,17 @@ def test_sber_not_found_page_is_reported_as_404():
         parse_sber_page(content)
 
     assert error.value.status_code == 404
+
+
+@pytest.mark.parametrize(("html_title", "seo", "expected"), [
+    ("", {"head": {"title": " Врач –  отзывы | СберЗдоровье "}}, "Врач – отзывы | СберЗдоровье"),
+    ("Заголовок страницы", {"head": {"title": "SEO"}}, "Заголовок страницы"),
+    ("", ["unexpected"], ""),
+])
+def test_sber_title_falls_back_to_seo_data(html_title, seo, expected):
+    payload = {"props": {"pageProps": {"seo": seo, "preloadedState": {"doctorPage": {"doctor": {"id": 1}}, "doctorReviews": {"reviewsForSeo": []}}}}}
+    content = f'<title>{html_title}</title><script id="__NEXT_DATA__">{json.dumps(payload, ensure_ascii=False)}</script>'
+
+    result, _, _ = parse_sber_page(content)
+
+    assert result.title == expected
