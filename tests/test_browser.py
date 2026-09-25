@@ -31,6 +31,7 @@ class FakePage:
         self.content = AsyncMock(return_value=content)
         self.close = AsyncMock()
         self.wait_for_selector = AsyncMock()
+        self.wait_for_function = AsyncMock()
         self.evaluate = AsyncMock()
         self.guard = None
 

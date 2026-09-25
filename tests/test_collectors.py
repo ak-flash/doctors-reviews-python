@@ -3,10 +3,11 @@ import json
 import httpx
 import pytest
 
-from collectors.base import CollectorResult, EmptyResponseError, Platform, SourceBlockedError, normalize_rating, normalize_url
+from collectors.base import CollectorResult, EmptyResponseError, Platform, SourceBlockedError, SourceHTTPError, normalize_rating, normalize_url
 from collectors.http_client import HTTPClient
 from collectors.prodoctorov import ProdoctorovCollector
 from collectors.sberzdorovie import SberZdorovieCollector
+from collectors.sberzdorovie import parse_sber_page
 
 
 async def noop_validator(url):
@@ -155,3 +156,13 @@ async def test_more_reviews_errors_are_not_silently_ignored(curl_session_factory
     async with HTTPClient(("docdoc.ru",), curl_session=session, url_validator=noop_validator) as client:
         with pytest.raises(error):
             await SberZdorovieCollector(client).collect("https://docdoc.ru/doctor/a", all_reviews=True)
+
+
+def test_sber_not_found_page_is_reported_as_404():
+    payload = {"page": "/404", "props": {"pageProps": {}}}
+    content = f'<title>404 — Страница не найдена</title><script id="__NEXT_DATA__">{json.dumps(payload)}</script>'
+
+    with pytest.raises(SourceHTTPError) as error:
+        parse_sber_page(content)
+
+    assert error.value.status_code == 404

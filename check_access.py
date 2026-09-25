@@ -14,7 +14,7 @@ import time
 from dotenv import load_dotenv
 
 load_dotenv()
-TEST_URL = os.getenv("TEST_URL", "https://ekb.docdoc.ru/doctor/Brant_Ekaterina")
+TEST_URL = os.getenv("TEST_URL", "https://ekb.docdoc.ru/doctor/Mozgalina_Irina")
 PRODOCTOROV_TEST_URL = os.getenv("PRODOCTOROV_TEST_URL", "https://prodoctorov.ru/ekaterinburg/vrach/248920-shakirov/")
 
 BLOCK_MARKERS = ("captcha", "recaptcha", "доступ ограничен", "access denied",
