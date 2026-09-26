@@ -97,6 +97,7 @@ async def test_browser_proxy_is_passed_to_camoufox(make_browser):
     client, _, _, factory = make_browser(page, proxy="http://proxy.example:8080")
     await client.collect(SBER_URL, Platform.SBERZDOROVIE)
     assert factory.call_args.kwargs["proxy"] == {"server": "http://proxy.example:8080"}
+    assert factory.call_args.kwargs["geoip"] is True
     await client.close()
 
 
@@ -128,6 +129,7 @@ async def test_one_lazy_context_for_both_sources(make_browser):
         factory.assert_awaited_once()
         assert factory.call_args.kwargs["persistent_context"] is True
         assert factory.call_args.kwargs["block_webgl"] is True
+        assert factory.call_args.kwargs["geoip"] is False
         assert context.new_page.await_count == 2
         assert sber.wait_for_selector.call_args.kwargs["state"] == "attached"
         sber.close.assert_awaited_once()

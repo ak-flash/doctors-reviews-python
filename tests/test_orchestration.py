@@ -27,6 +27,7 @@ def browser_fallback(monkeypatch):
 def reset_main(monkeypatch):
     monkeypatch.setattr(main, "API_AUTH_ENABLED", False)
     monkeypatch.setattr(main, "API_KEY", "")
+    monkeypatch.setattr(main, "STARTUP_WARMUP", False)
     main.app.state.cache = AsyncTTLCache(60, 10)
     main.app.state.blocked_cache = AsyncTTLCache(60, 10)
     main.app.state.semaphore = asyncio.Semaphore(1)

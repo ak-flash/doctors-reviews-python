@@ -20,7 +20,13 @@ from collectors.base import CollectorError, InvalidURLError, Platform, SourceBlo
 from collectors.browser import close_browser, collect_with_browser, stats as browser_stats
 from sentiment_service import check_batch_reviews_sentiment, check_review_sentiment
 
+
 load_dotenv()
+STARTUP_WARMUP = os.getenv("STARTUP_WARMUP", "true").lower() in {"1", "true", "yes"}
+WARMUP_CHECKS = (
+    (Platform.SBERZDOROVIE, os.getenv("TEST_URL", "https://ekb.docdoc.ru/doctor/Mozgalina_Irina")),
+    (Platform.PRODOCTOROV, os.getenv("PRODOCTOROV_TEST_URL", "https://prodoctorov.ru/ekaterinburg/vrach/248920-shakirov/")),
+)
 AI_API_URL = os.getenv("AI_API_URL")
 AI_API_KEY = os.getenv("AI_API_KEY")
 AI_MODEL = os.getenv("AI_MODEL")
@@ -47,12 +53,46 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+async def warmup_sources() -> None:
+    if not STARTUP_WARMUP:
+        logger.info("Startup warmup disabled")
+        return
+
+    logger.info("Startup warmup started")
+    for platform, url in WARMUP_CHECKS:
+        started = time.perf_counter()
+        try:
+            result = await collect_with_browser(url, platform)
+            logger.info(
+                "Provider works platform=%s url=%s status=ok reviews=%s title=%s elapsed_ms=%.1f",
+                platform.value,
+                url,
+                len(result.reviews),
+                result.title,
+                (time.perf_counter() - started) * 1000,
+            )
+        except CollectorError as error:
+            logger.warning(
+                "Provider blocked platform=%s url=%s status=%s code=%s reason=%s elapsed_ms=%.1f",
+                platform.value,
+                url,
+                error.status_code,
+                error.code,
+                error,
+                (time.perf_counter() - started) * 1000,
+            )
+        except Exception as error:
+            logger.exception("Provider warmup failed platform=%s url=%s error=%s", platform.value, url, error)
+    logger.info("Startup warmup finished")
+
+
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     app.state.cache = AsyncTTLCache(CACHE_TTL, CACHE_MAX_ENTRIES)
     app.state.blocked_cache = AsyncTTLCache(BLOCKED_CACHE_TTL, CACHE_MAX_ENTRIES)
     app.state.semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     app.state.rate_limiter = FixedWindowRateLimiter(RATE_LIMIT, RATE_WINDOW)
+    await warmup_sources()
     try:
         yield
     finally:

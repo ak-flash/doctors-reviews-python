@@ -109,6 +109,7 @@ class CamoufoxClient:
                 block_webgl=True,
                 i_know_what_im_doing=True,
                 proxy=_camoufox_proxy(self.proxy),
+                geoip=bool(self.proxy),
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             )
             self._context = await self._manager.__aenter__()
