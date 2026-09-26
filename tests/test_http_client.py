@@ -72,7 +72,7 @@ async def test_requests_use_configured_proxy(monkeypatch, source):
         monkeypatch.delenv(name.lower(), raising=False)
     async with fake_proxy() as (proxy, request_lines):
         if source == "environment":
-            monkeypatch.setenv("HTTPS_PROXY", proxy)
+            monkeypatch.setenv("HTTP_PROXY", proxy)
         async with HTTPClient(("docdoc.ru",), retries=0, url_validator=AsyncMock(), proxy=proxy if source == "argument" else None) as client:
             with pytest.raises(SourceHTTPError) as error:
                 await client.get("https://docdoc.ru/doctor/a")

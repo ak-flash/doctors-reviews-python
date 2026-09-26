@@ -16,11 +16,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from app.cache import AsyncTTLCache
 from app.limiter import FixedWindowRateLimiter
 from app import security
-from collectors.base import CollectorError, EmptyResponseError, InvalidURLError, Platform, SOURCE_CONFIGS, SourceBlockedError
-from collectors.http_client import HTTPClient
-from collectors.browser import close_browser, stats as browser_stats
-from collectors.prodoctorov import ProdoctorovCollector
-from collectors.sberzdorovie import SberZdorovieCollector
+from collectors.base import CollectorError, InvalidURLError, Platform, SourceBlockedError
+from collectors.browser import close_browser, collect_with_browser, stats as browser_stats
 from sentiment_service import check_batch_reviews_sentiment, check_review_sentiment
 
 load_dotenv()
@@ -129,10 +126,7 @@ async def fetch(url: str, platform: Platform, all_reviews: bool = False):
         return JSONResponse(status_code=blocked["status_code"], content=blocked["content"])
     try:
         async with app.state.semaphore:
-            domains = SOURCE_CONFIGS[platform].domains
-            async with HTTPClient(domains) as client:
-                collector = SberZdorovieCollector(client) if platform == Platform.SBERZDOROVIE else ProdoctorovCollector(client)
-                result = await collector.collect(target, all_reviews)
+            result = await collect_with_browser(target, platform, all_reviews)
         if MAX_RESULT_REVIEWS >= 0:
             result.reviews = result.reviews[:MAX_RESULT_REVIEWS]
         public = result.public()

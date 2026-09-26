@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from urllib.parse import urljoin, urlparse
@@ -51,7 +52,7 @@ class HTTPClient:
         self.retries = retries
         self.max_redirects = max_redirects
         self.url_validator = url_validator
-        self.proxy = proxy
+        self.proxy = proxy if proxy is not None else os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         self._client = client
         self._owns_client = client is None
 

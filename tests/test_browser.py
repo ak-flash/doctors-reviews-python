@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from collectors.base import InvalidURLError, Platform, SourceBlockedError, SourceHTTPError
-from collectors.browser import BrowserUnavailableError, CamoufoxClient
+from collectors.browser import BrowserNavigationError, BrowserUnavailableError, CamoufoxClient
 from collectors.http_client import ResponseTooLargeError
 
 
@@ -69,12 +69,24 @@ def make_browser(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_browser_proxy_is_passed_to_camoufox(make_browser):
     page = FakePage(sber_html())
     client, _, _, factory = make_browser(page, proxy="http://proxy.example:8080")
     await client.collect(SBER_URL, Platform.SBERZDOROVIE)
     assert factory.call_args.kwargs["proxy"] == {"server": "http://proxy.example:8080"}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_browser_proxy_credentials_are_split_for_camoufox(make_browser):
+    page = FakePage(sber_html())
+    client, _, _, factory = make_browser(page, proxy="http://user:p%40ss@proxy.example:8080")
+    await client.collect(SBER_URL, Platform.SBERZDOROVIE)
+    assert factory.call_args.kwargs["proxy"] == {
+        "server": "http://proxy.example:8080",
+        "username": "user",
+        "password": "p@ss",
+    }
     await client.close()
 
 
@@ -188,6 +200,30 @@ async def test_closed_context_is_replaced(make_browser):
     await client.collect(SBER_URL, Platform.SBERZDOROVIE)
     assert factory.await_count == 2
     manager.__aexit__.assert_awaited_once()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_navigation_failure_logs_short_error_and_debug_traceback(make_browser, caplog):
+    page = FakePage(sber_html())
+    page.goto = AsyncMock(side_effect=RuntimeError("Page.goto: unknown error"))
+    client, _, _, _ = make_browser(page)
+
+    with caplog.at_level("DEBUG", logger="collectors.browser"):
+        with pytest.raises(BrowserNavigationError, match="Page.goto: unknown error"):
+            await client.collect(SBER_URL, Platform.SBERZDOROVIE)
+
+    error_records = [record for record in caplog.records if record.levelname == "ERROR"]
+    debug_records = [record for record in caplog.records if record.levelname == "DEBUG"]
+    assert any(
+        "platform=sberzdorovie" in record.message
+        and "url=https://docdoc.ru/doctor/a" in record.message
+        and "error_type=RuntimeError" in record.message
+        and "reason=Page.goto: unknown error" in record.message
+        for record in error_records
+    )
+    assert any(record.exc_info for record in debug_records)
+    assert all(record.exc_info is None for record in error_records)
     await client.close()
 
 

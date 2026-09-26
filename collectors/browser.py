@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 import httpx
 
@@ -27,9 +27,25 @@ _browser: CamoufoxClient | None = None
 stats = {"fallbacks": 0, "browser_launches": 0}
 
 
+def _camoufox_proxy(proxy: str | None) -> dict[str, str] | None:
+    if not proxy:
+        return None
+    parsed = urlsplit(proxy)
+    result = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+    if parsed.username is not None:
+        result["username"] = unquote(parsed.username)
+    if parsed.password is not None:
+        result["password"] = unquote(parsed.password)
+    return result
+
+
 class BrowserUnavailableError(SourceHTTPError):
     status_code = 503
     code = "browser_unavailable"
+
+
+class BrowserNavigationError(SourceHTTPError):
+    code = "navigation_failure"
 
 
 async def _create_camoufox(**options):
@@ -55,7 +71,7 @@ class CamoufoxClient:
         self.max_response_bytes = max_response_bytes
         self.url_validator = url_validator
         self.proxy = proxy if proxy is not None else os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
-        self._factory = factory or _create_camoufox
+        self._factory = factory if factory is not None else _create_camoufox
         self._lock = asyncio.Lock()
         self._manager = None
         self._context: BrowserContext | None = None
@@ -90,7 +106,7 @@ class CamoufoxClient:
                 # in Docker, ServicePipe answered it with an image captcha, while the same fingerprint without WebGL passed.
                 block_webgl=True,
                 i_know_what_im_doing=True,
-                proxy={"server": self.proxy} if self.proxy else None,
+                proxy=_camoufox_proxy(self.proxy),
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
             )
             self._context = await self._manager.__aenter__()
@@ -107,6 +123,19 @@ class CamoufoxClient:
 
     def _on_context_closed(self, *args) -> None:
         self._context_closed = True
+
+    async def _save_debug_snapshot(self, page: Page, platform: Platform, stage: str) -> None:
+        # region debug-point browser-navigation
+        directory = Path("data/browser-debug")
+        await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
+        stamp = int(time.time() * 1000)
+        image = directory / f"{platform.value}-{stage}-{stamp}.png"
+        try:
+            await asyncio.wait_for(page.screenshot(path=str(image), timeout=5000), timeout=6)
+            logger.warning("Browser debug snapshot stage=%s url=%s image=%s", stage, page.url, image)
+        except Exception as error:
+            logger.warning("Browser debug snapshot unavailable stage=%s url=%s error=%s", stage, page.url, error)
+        # endregion debug-point browser-navigation
 
     async def _install_routes(self, page: Page, platform: Platform, start_url: str, failures: list[CollectorError]) -> None:
         navigations = 0
@@ -159,7 +188,25 @@ class CamoufoxClient:
                                 raise
                             await asyncio.sleep(1)
                     await self._install_routes(page, platform, url, failures)
-                    response = await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
+                    try:
+                        response = await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
+                    except Exception as error:
+                        await self._save_debug_snapshot(page, platform, "navigation-error")
+                        logger.error(
+                            "Browser navigation failed platform=%s url=%s error_type=%s reason=%s",
+                            platform.value,
+                            url,
+                            type(error).__name__,
+                            " ".join(str(error).split()),
+                        )
+                        logger.debug("Browser navigation traceback", exc_info=True)
+                        raise BrowserNavigationError(f"Browser navigation failed: {' '.join(str(error).split())}") from error
+                    title = ""
+                    title_reader = getattr(page, "title", None)
+                    if title_reader is not None:
+                        title = await title_reader()
+                    logger.info("Browser navigation platform=%s status=%s url=%s title=%s", platform.value, response.status if response else "none", page.url, title)
+                    await self._save_debug_snapshot(page, platform, "after-navigation")
                     if failures:
                         raise failures[0]
                     status = response.status if response is not None else 200
@@ -200,10 +247,17 @@ class CamoufoxClient:
             except Exception as error:
                 if failures:
                     raise failures[0] from error
-                logger.exception("Camoufox collection failed platform=%s url=%s", platform.value, url)
+                logger.error(
+                    "Camoufox collection failed platform=%s url=%s error_type=%s reason=%s",
+                    platform.value,
+                    url,
+                    type(error).__name__,
+                    error,
+                )
+                logger.debug("Camoufox collection traceback", exc_info=True)
                 if not context_ready:
-                    raise BrowserUnavailableError("Camoufox could not start; check browser installation and display") from error
-                raise SourceBlockedError("Browser did not load review data; source verification may still be required") from error
+                    raise BrowserUnavailableError(f"Camoufox could not start: {error}") from error
+                raise SourceBlockedError(f"Browser did not load review data: {error}") from error
             finally:
                 if page is not None:
                     with suppress(Exception):
