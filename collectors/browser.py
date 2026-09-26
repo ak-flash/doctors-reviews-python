@@ -64,9 +64,11 @@ class CamoufoxClient:
         url_validator: URLValidator = validate_public_dns,
         factory: BrowserFactory | None = None,
         proxy: str | None = None,
+        save_screenshots: bool = False,
     ):
         self.profile_dir = profile_dir
         self.headless = headless
+        self.save_screenshots = save_screenshots
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
         self.url_validator = url_validator
@@ -125,8 +127,9 @@ class CamoufoxClient:
         self._context_closed = True
 
     async def _save_debug_snapshot(self, page: Page, platform: Platform, stage: str) -> None:
-        # region debug-point browser-navigation
-        directory = Path("data/browser-debug")
+        if not self.save_screenshots:
+            return
+        directory = Path("screenshots")
         await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
         stamp = int(time.time() * 1000)
         image = directory / f"{platform.value}-{stage}-{stamp}.png"
@@ -307,6 +310,7 @@ async def collect_with_browser(url: str, platform: Platform, all_reviews: bool =
             profile_dir=os.getenv("BROWSER_PROFILE_DIR", "data/browser"),
             headless="virtual" if mode == "virtual" else mode == "true",
             timeout=float(os.getenv("BROWSER_TIMEOUT_SECONDS", "60")),
+            save_screenshots=os.getenv("SAVE_SCREENSHOTS", "false").lower() == "true",
         )
     stats["fallbacks"] += 1
     return await _browser.collect(url, platform, all_reviews)

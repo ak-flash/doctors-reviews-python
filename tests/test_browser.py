@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -29,6 +30,7 @@ class FakePage:
         self.main_frame = object()
         self.status = status
         self.content = AsyncMock(return_value=content)
+        self.screenshot = AsyncMock()
         self.close = AsyncMock()
         self.wait_for_selector = AsyncMock()
         self.evaluate = AsyncMock()
@@ -66,6 +68,27 @@ def make_browser(tmp_path):
         client = CamoufoxClient(profile_dir=str(tmp_path / "profile"), factory=factory, url_validator=validator, **options)
         return client, context, manager, factory
     return make
+
+
+@pytest.mark.asyncio
+async def test_screenshots_are_disabled_by_default(make_browser, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    page = FakePage(sber_html())
+    client, _, _, _ = make_browser(page)
+    await client._save_debug_snapshot(page, Platform.SBERZDOROVIE, "test")
+    assert not list(tmp_path.glob("screenshots/*"))
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_screenshots_use_screenshots_directory(make_browser, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    page = FakePage(sber_html())
+    client, _, _, _ = make_browser(page, save_screenshots=True)
+    await client._save_debug_snapshot(page, Platform.SBERZDOROVIE, "test")
+    page.screenshot.assert_awaited_once()
+    assert Path(page.screenshot.call_args.kwargs["path"]).parent == Path("screenshots")
+    await client.close()
 
 
 @pytest.mark.asyncio
