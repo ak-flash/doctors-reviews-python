@@ -18,7 +18,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - BROWSER_PROFILE_DIR=/tmp/doctors-reviews-browser
-      - BROWSER_HEADLESS=false
+      - BROWSER_HEADLESS=true
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health')"]
       interval: 30s

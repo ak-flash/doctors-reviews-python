@@ -28,7 +28,7 @@ platformdirs==4.5.1
 pydantic==2.11.5
 pydantic_core==2.33.2
 browserforge==1.2.3
-camoufox==0.4.11
+camoufox[geoip]==0.4.11
 playwright==1.57.0
 Pygments==2.19.1
 PySocks==1.7.1
